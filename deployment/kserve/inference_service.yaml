@@ -1,0 +1,77 @@
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: gpon-failure-predictor
+  namespace: kserve-inference
+  labels:
+    app.kubernetes.io/name: gpon-failure-predictor
+    app.kubernetes.io/component: model-serving
+    app.kubernetes.io/part-of: kubeflowingg
+    app.kubernetes.io/managed-by: kserve
+  annotations:
+    sidecar.istio.io/inject: "true"
+    serving.kserve.io/deploymentMode: Serverless
+spec:
+  predictor:
+    minReplicas: 1
+    maxReplicas: 2
+    scaleTarget: 5
+    scaleMetric: concurrency
+    serviceAccountName: kserve-minio-sa
+    xgboost:
+      storageUri: "s3://mlflow-artifacts/models/gpon-failure-predictor/latest/model"
+      runtimeVersion: "2.0.3"
+      protocolVersion: v2
+      env:
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: minio-credentials
+              key: accesskey
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: minio-credentials
+              key: secretkey
+        - name: AWS_S3_ENDPOINT
+          value: "http://mlflow-minio.mlops.svc.cluster.local:9000"
+        - name: S3_USE_HTTPS
+          value: "0"
+        - name: S3_VERIFY_SSL
+          value: "0"
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "256Mi"
+        limits:
+          cpu: "500m"
+          memory: "512Mi"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-credentials
+  namespace: kserve-inference
+  labels:
+    app.kubernetes.io/name: gpon-failure-predictor
+    app.kubernetes.io/component: storage-credentials
+  annotations:
+    serving.kserve.io/s3-endpoint: "mlflow-minio.mlops.svc.cluster.local:9000"
+    serving.kserve.io/s3-usehttps: "0"
+    serving.kserve.io/s3-verifyssl: "0"
+    serving.kserve.io/s3-region: "us-east-1"
+type: Opaque
+stringData:
+  accesskey: "minio"
+  secretkey: "minio123"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kserve-minio-sa
+  namespace: kserve-inference
+  labels:
+    app.kubernetes.io/name: gpon-failure-predictor
+    app.kubernetes.io/component: service-account
+secrets:
+  - name: minio-credentials
