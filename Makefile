@@ -10,10 +10,10 @@ lint:
 	flake8 src/
 
 docker-up:
-	docker compose up -d
+	docker compose -f infrastructure/docker-compose.yml up -d --build
 
 docker-down:
-	docker compose down
+	docker compose -f infrastructure/docker-compose.yml down
 
 format:
 	black src/
