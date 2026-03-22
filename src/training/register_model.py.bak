@@ -47,7 +47,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_EXPERIMENT_NAME = "gpon-failure-prediction"
 DEFAULT_MODEL_NAME = "gpon-xgboost-classifier"
 
-
 def configure_logging(level: int = logging.INFO) -> None:
     """Set up structured logging for the registration pipeline.
 
@@ -60,7 +59,6 @@ def configure_logging(level: int = logging.INFO) -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
         handlers=[logging.StreamHandler(sys.stdout)],
     )
-
 
 def compute_metrics(result: TrainingResult) -> Dict[str, float]:
     """Compute all evaluation metrics from a training result.
@@ -87,7 +85,6 @@ def compute_metrics(result: TrainingResult) -> Dict[str, float]:
 
     return metrics
 
-
 def log_metrics_to_mlflow(metrics: Dict[str, float]) -> None:
     """Log a dictionary of metrics to the active MLflow run.
 
@@ -97,13 +94,15 @@ def log_metrics_to_mlflow(metrics: Dict[str, float]) -> None:
     mlflow.log_metrics(metrics)
     logger.info("Logged %d metrics to MLflow", len(metrics))
 
-
 def generate_feature_importance_plot(
     model: xgb.XGBClassifier,
     feature_names: List[str],
     top_n: int = 15,
 ) -> str:
     """Create a horizontal bar chart of XGBoost feature importances.
+
+    The plot is saved to a temporary PNG file and its path returned
+    for MLflow artifact logging.
 
     Args:
         model: Fitted XGBClassifier with ``feature_importances_``.
@@ -138,7 +137,6 @@ def generate_feature_importance_plot(
     logger.info("Feature importance plot saved to %s", tmp_path)
     return tmp_path
 
-
 def log_feature_importance_artifact(
     model: xgb.XGBClassifier,
     feature_names: List[str],
@@ -153,12 +151,14 @@ def log_feature_importance_artifact(
     mlflow.log_artifact(plot_path, artifact_path="plots")
     logger.info("Feature importance plot logged to MLflow artifacts")
 
-
 def register_model_in_registry(
     model: xgb.XGBClassifier,
     model_name: str,
 ) -> None:
     """Log the XGBoost model and register it in the MLflow Model Registry.
+
+    Uses ``mlflow.xgboost.log_model`` with the ``registered_model_name``
+    parameter to atomically log and register in a single call.
 
     Args:
         model: Fitted XGBClassifier to register.
@@ -174,7 +174,6 @@ def register_model_in_registry(
         "Model registered in MLflow Model Registry as '%s'", model_name
     )
 
-
 def run_registration_pipeline(
     input_path: Path,
     experiment_name: str = DEFAULT_EXPERIMENT_NAME,
@@ -183,6 +182,15 @@ def run_registration_pipeline(
     tracking_uri: Optional[str] = None,
 ) -> None:
     """Execute the full MLflow registration pipeline.
+
+    Steps:
+        1. Configure MLflow tracking URI and experiment.
+        2. Enable XGBoost autologging.
+        3. Start an MLflow run.
+        4. Train model via ``run_training_pipeline``.
+        5. Compute and log evaluation metrics.
+        6. Generate and log feature importance plot.
+        7. Register model in the MLflow Model Registry.
 
     Args:
         input_path: Path to the processed telemetry CSV.
@@ -240,12 +248,10 @@ def run_registration_pipeline(
         logger.info("Run ID   : %s", run.info.run_id)
         logger.info("Model    : %s", model_name)
         logger.info("AUC-ROC  : %.4f", metrics["test_auc_roc"])
-        logger.info("F1 Score : %.4f", metrics["test_f1"])  # BUG FIX 1: removed extra )
-
+        logger.info("F1 Score : %.4f", metrics["test_f1"]))
 
 def main() -> None:
     """CLI entry-point for the MLflow registration pipeline."""
-    # BUG FIX 2: entire main() was scrambled — reconstructed in correct order
     parser = argparse.ArgumentParser(
         description="Train, evaluate, and register XGBoost model in MLflow.",
     )
@@ -270,26 +276,25 @@ def main() -> None:
     parser.add_argument(
         "--test-size",
         type=float,
-        default=0.2,
-        help="Fraction of data reserved for testing (0-1).",
-    )
-    parser.add_argument(
-        "--tracking-uri",
-        type=str,
-        default=None,
         help="MLflow tracking server URI.",
-    )
-    args = parser.parse_args()
-
     configure_logging()
     run_registration_pipeline(
         input_path=args.input,
-        experiment_name=args.experiment_name,
-        model_name=args.model_name,
-        test_size=args.test_size,
         tracking_uri=args.tracking_uri,
     )
 
 
 if __name__ == "__main__":
-    main()
+    main()        experiment_name=args.experiment_name,
+        model_name=args.model_name,
+        test_size=args.test_size,
+    )
+    args = parser.parse_args()
+
+        "--tracking-uri",
+        type=str,
+        default=None,
+        default=0.2,
+    )
+    parser.add_argument(
+
