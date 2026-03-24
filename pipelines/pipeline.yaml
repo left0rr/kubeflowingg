@@ -3,10 +3,8 @@
 # Description: End-to-end ML pipeline for predicting GPON router failures within a 7-day horizon.  Stages: ingestion → training → evaluation.
 # Inputs:
 #    auc_threshold: float [Default: 0.75]
-#    input_csv_path: str [Default: 'gs://gpon-telemetry/raw/telemetry.csv']
+#    input_csv_path: str [Default: 's3://gpon-telemetry/raw/telemetry.csv']
 #    test_size: float [Default: 0.2]
-# Outputs:
-#    evaluation-component-metrics_artifact: system.Metrics
 components:
   comp-evaluation-component:
     executorLabel: exec-evaluation-component
@@ -80,10 +78,9 @@ deploymentSpec:
         - -c
         - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
-          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.7.0'\
-          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
-          \  python3 -m pip install --quiet --no-warn-script-location 'pandas==2.1.4'\
-          \ 'scikit-learn==1.3.2' 'numpy==1.26.2' && \"$0\" \"$@\"\n"
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
         - sh
         - -ec
         - 'program_path=$(mktemp -d)
@@ -139,7 +136,7 @@ deploymentSpec:
           \        )\n    else:\n        logger.warning(\n            \"FAILED: AUC-ROC\
           \ %.4f < threshold %.4f\", auc_roc, auc_threshold\n        )\n\n    return\
           \ passed\n\n"
-        image: python:3.9
+        image: kfp-base:latest
     exec-ingestion-component:
       container:
         args:
@@ -152,11 +149,9 @@ deploymentSpec:
         - -c
         - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
-          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.7.0'\
-          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
-          \  python3 -m pip install --quiet --no-warn-script-location 'pandas==2.1.4'\
-          \ 'pydantic==2.5.3' 'boto3==1.34.95' 'fsspec==2024.2.0' 's3fs==2024.2.0'\
-          \ && \"$0\" \"$@\"\n"
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
         - sh
         - -ec
         - 'program_path=$(mktemp -d)
@@ -246,7 +241,7 @@ deploymentSpec:
           ] = len(valid_df.columns)\n    processed_dataset.metadata[\"invalid_row_count\"\
           ] = len(invalid_indices)\n    logger.info(\"Processed dataset written to\
           \ %s\", processed_dataset.path)\n\n"
-        image: python:3.9
+        image: kfp-base:latest
     exec-training-component:
       container:
         args:
@@ -259,11 +254,9 @@ deploymentSpec:
         - -c
         - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
-          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.7.0'\
-          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
-          \  python3 -m pip install --quiet --no-warn-script-location 'pandas==2.1.4'\
-          \ 'xgboost==2.0.3' 'scikit-learn==1.3.2' 'numpy==1.26.2' && \"$0\" \"$@\"\
-          \n"
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
         - sh
         - -ec
         - 'program_path=$(mktemp -d)
@@ -337,19 +330,13 @@ deploymentSpec:
           \    test_data_artifact.metadata[\"test_row_count\"] = len(test_output)\n\
           \    logger.info(\"Test data with predictions written to %s\", test_data_artifact.path)\n\
           \n"
-        image: python:3.9
+        image: kfp-base:latest
 pipelineInfo:
   description: "End-to-end ML pipeline for predicting GPON router failures within\
     \ a 7-day horizon.  Stages: ingestion \u2192 training \u2192 evaluation."
   name: gpon-failure-prediction-pipeline
 root:
   dag:
-    outputs:
-      artifacts:
-        evaluation-component-metrics_artifact:
-          artifactSelectors:
-          - outputArtifactKey: metrics_artifact
-            producerSubtask: evaluation-component
     tasks:
       evaluation-component:
         cachingOptions: {}
@@ -407,10 +394,10 @@ root:
         isOptional: true
         parameterType: NUMBER_DOUBLE
       input_csv_path:
-        defaultValue: gs://gpon-telemetry/raw/telemetry.csv
+        defaultValue: s3://gpon-telemetry/raw/telemetry.csv
         description: 'Cloud Storage or local path to the raw telemetry
 
-          CSV file.  Defaults to ``gs://gpon-telemetry/raw/telemetry.csv``.'
+          CSV file.  Defaults to ``s3://gpon-telemetry/raw/telemetry.csv``.'
         isOptional: true
         parameterType: STRING
       test_size:
@@ -420,11 +407,16 @@ root:
           split.  Must be in the open interval (0, 1).  Defaults to ``0.2``.'
         isOptional: true
         parameterType: NUMBER_DOUBLE
-  outputDefinitions:
-    artifacts:
-      evaluation-component-metrics_artifact:
-        artifactType:
-          schemaTitle: system.Metrics
-          schemaVersion: 0.0.1
 schemaVersion: 2.1.0
-sdkVersion: kfp-2.7.0
+sdkVersion: kfp-2.16.0
+---
+platforms:
+  kubernetes:
+    deploymentSpec:
+      executors:
+        exec-evaluation-component:
+          imagePullPolicy: Never
+        exec-ingestion-component:
+          imagePullPolicy: Never
+        exec-training-component:
+          imagePullPolicy: Never

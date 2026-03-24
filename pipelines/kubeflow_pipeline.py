@@ -24,6 +24,7 @@ Usage::
 from pathlib import Path
 
 from kfp import compiler, dsl
+from kfp import kubernetes 
 
 from pipelines.pipeline_components import (
     evaluation_component,
@@ -35,7 +36,7 @@ from pipelines.pipeline_components import (
 # Pipeline defaults
 # ---------------------------------------------------------------------------
 
-_DEFAULT_INPUT_CSV = "gs://gpon-telemetry/raw/telemetry.csv"
+_DEFAULT_INPUT_CSV = "s3://gpon-telemetry/raw/telemetry.csv"
 _DEFAULT_TEST_SIZE = 0.2
 _DEFAULT_AUC_THRESHOLD = 0.75
 
@@ -60,7 +61,7 @@ def gpon_failure_prediction_pipeline(
 
     Args:
         input_csv_path: Cloud Storage or local path to the raw telemetry
-            CSV file.  Defaults to ``gs://gpon-telemetry/raw/telemetry.csv``.
+            CSV file.  Defaults to ``s3://gpon-telemetry/raw/telemetry.csv``.
         test_size: Fraction of data reserved for the chronological test
             split.  Must be in the open interval (0, 1).  Defaults to ``0.2``.
         auc_threshold: Minimum AUC-ROC score the trained model must
@@ -73,6 +74,7 @@ def gpon_failure_prediction_pipeline(
     )
     ingest_task.set_display_name("Ingest & Validate Telemetry")
     ingest_task.set_caching_options(enable_caching=True)
+    kubernetes.set_image_pull_policy(ingest_task, "Never") 
 
     # Step 2 – Training: chronological split → XGBoost fit → predictions
     train_task = training_component(
@@ -82,6 +84,7 @@ def gpon_failure_prediction_pipeline(
     train_task.set_display_name("Train XGBoost Classifier")
     train_task.set_caching_options(enable_caching=True)
     train_task.after(ingest_task)
+    kubernetes.set_image_pull_policy(train_task, "Never")
 
     # Step 3 – Evaluation: metrics → AUC gate
     eval_task = evaluation_component(
@@ -91,6 +94,7 @@ def gpon_failure_prediction_pipeline(
     eval_task.set_display_name("Evaluate Model & Quality Gate")
     eval_task.set_caching_options(enable_caching=False)
     eval_task.after(train_task)
+    kubernetes.set_image_pull_policy(eval_task, "Never") 
 
 
 # ---------------------------------------------------------------------------

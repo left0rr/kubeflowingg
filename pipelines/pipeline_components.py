@@ -29,14 +29,8 @@ from uvicorn import Config
 # ---------------------------------------------------------------------------
 
 @dsl.component(
-    base_image="python:3.9",
-    packages_to_install=[
-        "pandas==2.1.4",
-        "pydantic==2.5.3",
-        "boto3==1.34.95",
-        "fsspec==2024.2.0",
-        "s3fs==2024.2.0",
-    ],
+    base_image="kfp-base:latest",
+    packages_to_install=[],  # already in image
 )
 def ingestion_component(
     input_csv_path: str,
@@ -193,13 +187,8 @@ def ingestion_component(
 # ---------------------------------------------------------------------------
 
 @dsl.component(
-    base_image="python:3.9",
-    packages_to_install=[
-        "pandas==2.1.4",
-        "xgboost==2.0.3",
-        "scikit-learn==1.3.2",
-        "numpy==1.26.2",
-    ],
+    base_image="kfp-base:latest",
+    packages_to_install=[],  # already in image
 )
 def training_component(
     processed_dataset: Input[Dataset],
@@ -323,12 +312,8 @@ downstream evaluation.
 # ---------------------------------------------------------------------------
 
 @dsl.component(
-    base_image="python:3.9",
-    packages_to_install=[
-        "pandas==2.1.4",
-        "scikit-learn==1.3.2",
-        "numpy==1.26.2",
-    ],
+    base_image="kfp-base:latest",
+    packages_to_install=[],  # already in image
 )
 def evaluation_component(
     test_data_artifact: Input[Dataset],
