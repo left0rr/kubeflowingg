@@ -16,8 +16,12 @@ components:
           artifactType:
             schemaTitle: system.Dataset
             schemaVersion: 0.0.1
+          description: 'KFP input artifact -- test CSV with
+
+            prediction columns from ``training_component``.'
       parameters:
         auc_threshold:
+          description: Minimum AUC-ROC required for the model to pass.
           parameterType: NUMBER_DOUBLE
     outputDefinitions:
       artifacts:
@@ -33,6 +37,7 @@ components:
     inputDefinitions:
       parameters:
         input_csv_path:
+          description: GCS / S3 / local path to the raw telemetry CSV.
           parameterType: STRING
     outputDefinitions:
       artifacts:
@@ -92,36 +97,48 @@ deploymentSpec:
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
           \ *\n\ndef evaluation_component(\n    test_data_artifact: Input[Dataset],\n\
           \    auc_threshold: float,\n    metrics_artifact: Output[Metrics],\n) ->\
-          \ bool:\n    \"\"\"Evaluate XGBoost predictions and gate on AUC-ROC threshold.\"\
-          \"\"\n    import logging\n    import sys\n\n    import numpy as np\n   \
-          \ import pandas as pd\n    from sklearn.metrics import (\n        f1_score,\n\
-          \        precision_score,\n        recall_score,\n        roc_auc_score,\n\
-          \    )\n\n    logging.basicConfig(\n        level=logging.INFO,\n      \
-          \  format=\"%(asctime)s | %(name)s | %(levelname)s | %(message)s\",\n  \
-          \      datefmt=\"%Y-%m-%d %H:%M:%S\",\n        handlers=[logging.StreamHandler(sys.stdout)],\n\
+          \ bool:\n    \"\"\"Evaluate XGBoost predictions and gate on AUC-ROC threshold.\n\
+          \n    Reads the test CSV (with ``y_pred`` and ``y_pred_proba`` columns\n\
+          \    produced by ``training_component``), computes AUC-ROC, precision,\n\
+          \    recall, and F1, logs them to the KFP Metrics artifact, and returns\n\
+          \    whether the model passes the AUC gate.\n\n    Args:\n        test_data_artifact:\
+          \ KFP input artifact -- test CSV with\n            prediction columns from\
+          \ ``training_component``.\n        auc_threshold: Minimum AUC-ROC required\
+          \ for the model to pass.\n        metrics_artifact: KFP output artifact\
+          \ for logged metrics.\n\n    Returns:\n        ``True`` if AUC-ROC >= *auc_threshold*,\
+          \ ``False`` otherwise.\n    \"\"\"\n    import logging\n    import sys\n\
+          \n    import numpy as np\n    import pandas as pd\n    from sklearn.metrics\
+          \ import (\n        f1_score,\n        precision_score,\n        recall_score,\n\
+          \        roc_auc_score,\n    )\n\n    logging.basicConfig(\n        level=logging.INFO,\n\
+          \        format=\"%(asctime)s | %(name)s | %(levelname)s | %(message)s\"\
+          ,\n        datefmt=\"%Y-%m-%d %H:%M:%S\",\n        handlers=[logging.StreamHandler(sys.stdout)],\n\
           \    )\n    logger = logging.getLogger(\"evaluation_component\")\n\n   \
-          \ TARGET_COLUMN = \"Failure_In_7_Days\"\n\n    logger.info(\"Loading test\
-          \ data from %s\", test_data_artifact.path)\n    test_df = pd.read_csv(test_data_artifact.path)\n\
-          \    logger.info(\"Loaded %d test rows\", len(test_df))\n\n    y_true =\
-          \ test_df[TARGET_COLUMN].values\n    y_pred = test_df[\"y_pred\"].values\n\
-          \    y_pred_proba = test_df[\"y_pred_proba\"].values\n\n    auc_roc = float(roc_auc_score(y_true,\
-          \ y_pred_proba))\n    precision = float(precision_score(y_true, y_pred,\
-          \ zero_division=0.0))\n    recall = float(recall_score(y_true, y_pred, zero_division=0.0))\n\
-          \    f1 = float(f1_score(y_true, y_pred, zero_division=0.0))\n    positive_rate\
-          \ = float(np.mean(y_pred))\n\n    logger.info(\"AUC-ROC   : %.4f\", auc_roc)\n\
-          \    logger.info(\"Precision : %.4f\", precision)\n    logger.info(\"Recall\
-          \    : %.4f\", recall)\n    logger.info(\"F1 Score  : %.4f\", f1)\n    logger.info(\"\
-          Pos. Rate : %.4f\", positive_rate)\n\n    metrics_artifact.log_metric(\"\
-          auc_roc\", auc_roc)\n    metrics_artifact.log_metric(\"precision\", precision)\n\
-          \    metrics_artifact.log_metric(\"recall\", recall)\n    metrics_artifact.log_metric(\"\
-          f1_score\", f1)\n    metrics_artifact.log_metric(\"positive_rate\", positive_rate)\n\
-          \    metrics_artifact.log_metric(\"test_row_count\", float(len(test_df)))\n\
-          \    metrics_artifact.log_metric(\"auc_threshold\", auc_threshold)\n\n \
-          \   passed = auc_roc >= auc_threshold\n    metrics_artifact.log_metric(\"\
-          passed_gate\", float(passed))\n\n    if passed:\n        logger.info(\"\
-          PASSED: AUC-ROC %.4f >= threshold %.4f\", auc_roc, auc_threshold)\n    else:\n\
-          \        logger.warning(\"FAILED: AUC-ROC %.4f < threshold %.4f\", auc_roc,\
-          \ auc_threshold)\n\n    return passed\n\n"
+          \ TARGET_COLUMN = \"Failure_In_7_Days\"\n\n    # ---- Load test data --------------------------------------------------\n\
+          \n    logger.info(\"Loading test data from %s\", test_data_artifact.path)\n\
+          \    test_df = pd.read_csv(test_data_artifact.path)\n    logger.info(\"\
+          Loaded %d test rows\", len(test_df))\n\n    y_true = test_df[TARGET_COLUMN].values\n\
+          \    y_pred = test_df[\"y_pred\"].values\n    y_pred_proba = test_df[\"\
+          y_pred_proba\"].values\n\n    # ---- Compute metrics -------------------------------------------------\n\
+          \n    auc_roc = float(roc_auc_score(y_true, y_pred_proba))\n    precision\
+          \ = float(precision_score(y_true, y_pred, zero_division=0.0))\n    recall\
+          \ = float(recall_score(y_true, y_pred, zero_division=0.0))\n    f1 = float(f1_score(y_true,\
+          \ y_pred, zero_division=0.0))\n    positive_rate = float(np.mean(y_pred))\n\
+          \n    logger.info(\"AUC-ROC   : %.4f\", auc_roc)\n    logger.info(\"Precision\
+          \ : %.4f\", precision)\n    logger.info(\"Recall    : %.4f\", recall)\n\
+          \    logger.info(\"F1 Score  : %.4f\", f1)\n    logger.info(\"Pos. Rate\
+          \ : %.4f\", positive_rate)\n\n    # ---- Log to KFP Metrics artifact -------------------------------------\n\
+          \n    metrics_artifact.log_metric(\"auc_roc\", auc_roc)\n    metrics_artifact.log_metric(\"\
+          precision\", precision)\n    metrics_artifact.log_metric(\"recall\", recall)\n\
+          \    metrics_artifact.log_metric(\"f1_score\", f1)\n    metrics_artifact.log_metric(\"\
+          positive_rate\", positive_rate)\n    metrics_artifact.log_metric(\"test_row_count\"\
+          , float(len(test_df)))\n    metrics_artifact.log_metric(\"auc_threshold\"\
+          , auc_threshold)\n\n    # ---- Gate decision ---------------------------------------------------\n\
+          \n    passed = auc_roc >= auc_threshold\n    metrics_artifact.log_metric(\"\
+          passed_gate\", float(passed))\n\n    if passed:\n        logger.info(\n\
+          \            \"PASSED: AUC-ROC %.4f >= threshold %.4f\", auc_roc, auc_threshold\n\
+          \        )\n    else:\n        logger.warning(\n            \"FAILED: AUC-ROC\
+          \ %.4f < threshold %.4f\", auc_roc, auc_threshold\n        )\n\n    return\
+          \ passed\n\n"
         image: python:3.9
     exec-ingestion-component:
       container:
@@ -138,7 +155,8 @@ deploymentSpec:
           \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.7.0'\
           \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
           \  python3 -m pip install --quiet --no-warn-script-location 'pandas==2.1.4'\
-          \ 'pydantic==2.5.3' 'boto3==1.34.95' && \"$0\" \"$@\"\n"
+          \ 'pydantic==2.5.3' 'boto3==1.34.95' 'fsspec==2024.2.0' 's3fs==2024.2.0'\
+          \ && \"$0\" \"$@\"\n"
         - sh
         - -ec
         - 'program_path=$(mktemp -d)
@@ -152,18 +170,24 @@ deploymentSpec:
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
           \ *\n\ndef ingestion_component(\n    input_csv_path: str,\n    processed_dataset:\
           \ Output[Dataset],\n) -> None:\n    \"\"\"Ingest and validate raw GPON telemetry\
-          \ data.\"\"\"\n    import logging\n    import os\n    import sys\n    import\
-          \ tempfile\n    from typing import List\n    from urllib.parse import urlparse\n\
-          \n    import boto3\n    import pandas as pd\n    from pydantic import BaseModel,\
+          \ data.\n\n    Loads raw CSV telemetry, validates each row against the Pydantic\n\
+          \    ``TelemetryRecord`` schema, applies feature engineering (voltage\n\
+          \    normalisation, rolling RX-power stats), and writes the processed\n\
+          \    DataFrame as a CSV artifact.\n\n    Args:\n        input_csv_path:\
+          \ GCS / S3 / local path to the raw telemetry CSV.\n        processed_dataset:\
+          \ KFP output artifact for the processed CSV.\n    \"\"\"\n    import logging\n\
+          \    import sys\n    from pathlib import Path\n    from typing import List,\
+          \ Tuple\n\n    import pandas as pd\n    from pydantic import BaseModel,\
           \ Field, ValidationError, field_validator\n\n    logging.basicConfig(\n\
           \        level=logging.INFO,\n        format=\"%(asctime)s | %(name)s |\
           \ %(levelname)s | %(message)s\",\n        datefmt=\"%Y-%m-%d %H:%M:%S\"\
           ,\n        handlers=[logging.StreamHandler(sys.stdout)],\n    )\n    logger\
           \ = logging.getLogger(\"ingestion_component\")\n\n    # ---- Inline validation\
           \ schema ----------------------------------------\n\n    class TelemetryRecord(BaseModel):\n\
-          \        Optical_RX_Power_dBm: float = Field(..., ge=-40.0, le=0.0)\n  \
-          \      Optical_TX_Power_dBm: float = Field(..., ge=-10.0, le=10.0)\n   \
-          \     Temperature_C: float = Field(..., ge=-40.0, le=125.0)\n        Voltage_mV:\
+          \        \"\"\"Pydantic schema mirroring src.data.validation.TelemetryRecord.\"\
+          \"\"\n\n        Optical_RX_Power_dBm: float = Field(..., ge=-40.0, le=0.0)\n\
+          \        Optical_TX_Power_dBm: float = Field(..., ge=-10.0, le=10.0)\n \
+          \       Temperature_C: float = Field(..., ge=-40.0, le=125.0)\n        Voltage_mV:\
           \ float = Field(..., ge=0.0, le=5000.0)\n        Bias_Current_mA: float\
           \ = Field(..., ge=0.0, le=200.0)\n        Interface_Error_Count: int = Field(...,\
           \ ge=0)\n        Reboot_Count_Last_7D: int = Field(..., ge=0)\n        Connected_Devices:\
@@ -184,27 +208,26 @@ deploymentSpec:
           \        rolling = df[\"Optical_RX_Power_dBm\"].rolling(window=window, min_periods=1)\n\
           \        df[\"RX_Power_Rolling_Mean_dBm\"] = rolling.mean()\n        df[\"\
           RX_Power_Rolling_Std_dBm\"] = rolling.std().fillna(0.0)\n        df = df.reset_index()\n\
-          \        return df\n\n    # ---- Load CSV via boto3 (handles s3:// paths\
-          \ through MinIO) ----------\n\n    logger.info(\"Loading raw CSV from %s\"\
-          , input_csv_path)\n\n    parsed = urlparse(input_csv_path)\n    if parsed.scheme\
-          \ == \"s3\":\n        s3_endpoint = os.environ.get(\n            \"MLFLOW_S3_ENDPOINT_URL\"\
-          ,\n            \"http://mlflow-minio.mlops.svc.cluster.local:9000\",\n \
-          \       )\n        aws_key = os.environ.get(\"AWS_ACCESS_KEY_ID\", \"minio\"\
-          )\n        aws_secret = os.environ.get(\"AWS_SECRET_ACCESS_KEY\", \"minio123\"\
-          )\n\n        logger.info(\"Connecting to MinIO at %s\", s3_endpoint)\n \
-          \       s3_client = boto3.client(\n            \"s3\",\n            endpoint_url=s3_endpoint,\n\
-          \            aws_access_key_id=aws_key,\n            aws_secret_access_key=aws_secret,\n\
-          \        )\n        bucket = parsed.netloc\n        key = parsed.path.lstrip(\"\
-          /\")\n\n        tmp_file = tempfile.NamedTemporaryFile(suffix=\".csv\",\
-          \ delete=False)\n        tmp_path = tmp_file.name\n        tmp_file.close()\n\
-          \n        logger.info(\"Downloading s3://%s/%s \u2192 %s\", bucket, key,\
-          \ tmp_path)\n        s3_client.download_file(bucket, key, tmp_path)\n  \
-          \      raw_df = pd.read_csv(tmp_path)\n        os.unlink(tmp_path)\n   \
-          \ else:\n        raw_df = pd.read_csv(input_csv_path)\n\n    logger.info(\"\
-          Loaded %d rows, %d columns\", len(raw_df), len(raw_df.columns))\n\n    #\
-          \ ---- Validate --------------------------------------------------------\n\
-          \n    valid_rows: List[dict] = []\n    invalid_indices: List[int] = []\n\
-          \n    for idx, row in raw_df.iterrows():\n        try:\n            record\
+          \        return df\n\n    # ---- Load CSV --------------------------------------------------------\n\
+          \n    import os\n    import tempfile\n    import boto3\n    from urllib.parse\
+          \ import urlparse\n    from botocore.config import Config\n\n    logger.info(\"\
+          Loading raw CSV from %s\", input_csv_path)\n\n    parsed = urlparse(input_csv_path)\n\
+          \    if parsed.scheme == \"s3\":\n        s3_endpoint = os.environ.get(\"\
+          MLFLOW_S3_ENDPOINT_URL\", \"http://172.19.0.1:9000\")\n        s3_client\
+          \ = boto3.client(\n            \"s3\",\n            endpoint_url=s3_endpoint,\n\
+          \            aws_access_key_id=os.environ.get(\"AWS_ACCESS_KEY_ID\", \"\
+          minio\"),\n            aws_secret_access_key=os.environ.get(\"AWS_SECRET_ACCESS_KEY\"\
+          , \"minio123\"),\n            region_name=\"us-east-1\",\n            config=Config(signature_version=\"\
+          s3v4\"),\n        )\n        bucket = parsed.netloc\n        key = parsed.path.lstrip(\"\
+          /\")\n        with tempfile.NamedTemporaryFile(suffix=\".csv\", delete=False)\
+          \ as tmp:\n            tmp_path = tmp.name\n        s3_client.download_file(bucket,\
+          \ key, tmp_path)\n        logger.info(\"Downloaded s3://%s/%s to %s\", bucket,\
+          \ key, tmp_path)\n        raw_df = pd.read_csv(tmp_path)\n    else:\n  \
+          \      raw_df = pd.read_csv(input_csv_path)\n\n    logger.info(\"Loaded\
+          \ %d rows, %d columns\", len(raw_df), len(raw_df.columns))\n\n    # ----\
+          \ Validate --------------------------------------------------------\n\n\
+          \    valid_rows: List[dict] = []\n    invalid_indices: List[int] = []\n\n\
+          \    for idx, row in raw_df.iterrows():\n        try:\n            record\
           \ = TelemetryRecord(**row.to_dict())\n            valid_rows.append(record.model_dump())\n\
           \        except ValidationError as exc:\n            invalid_indices.append(int(idx))\n\
           \            logger.warning(\"Row %d failed validation: %s errors\", idx,\
@@ -255,45 +278,65 @@ deploymentSpec:
           \ *\n\ndef training_component(\n    processed_dataset: Input[Dataset],\n\
           \    test_size: float,\n    model_artifact: Output[Model],\n    test_data_artifact:\
           \ Output[Dataset],\n) -> None:\n    \"\"\"Train an XGBoost classifier on\
-          \ processed GPON telemetry data.\"\"\"\n    import json\n    import logging\n\
-          \    import sys\n    from pathlib import Path\n    from typing import Dict,\
-          \ List\n\n    import numpy as np\n    import pandas as pd\n    import xgboost\
-          \ as xgb\n\n    logging.basicConfig(\n        level=logging.INFO,\n    \
-          \    format=\"%(asctime)s | %(name)s | %(levelname)s | %(message)s\",\n\
-          \        datefmt=\"%Y-%m-%d %H:%M:%S\",\n        handlers=[logging.StreamHandler(sys.stdout)],\n\
-          \    )\n    logger = logging.getLogger(\"training_component\")\n\n    TARGET_COLUMN\
-          \ = \"Failure_In_7_Days\"\n    NON_FEATURE_COLUMNS = [TARGET_COLUMN, \"\
-          timestamp\"]\n\n    DEFAULT_XGB_PARAMS: Dict[str, object] = {\n        \"\
-          objective\": \"binary:logistic\",\n        \"eval_metric\": \"auc\",\n \
-          \       \"max_depth\": 6,\n        \"learning_rate\": 0.1,\n        \"n_estimators\"\
-          : 200,\n        \"subsample\": 0.8,\n        \"colsample_bytree\": 0.8,\n\
-          \        \"scale_pos_weight\": 1.0,\n        \"random_state\": 42,\n   \
-          \     \"use_label_encoder\": False,\n    }\n\n    logger.info(\"Loading\
+          \ processed GPON telemetry data.\n\n    Performs a chronological train/test\
+          \ split, trains an XGBoost binary\n    classifier for ``Failure_In_7_Days``,\
+          \ serialises the model as a\n    JSON artifact, and writes the test set\
+          \ with predictions for\ndownstream evaluation.\n\n    Args:\n        processed_dataset:\
+          \ KFP input artifact -- processed CSV from\n            ``ingestion_component``.\n\
+          \        test_size: Fraction of data reserved for the test set (0-1).\n\
+          \        model_artifact: KFP output artifact for the serialised XGBoost\
+          \ model.\n        test_data_artifact: KFP output artifact for the test CSV\
+          \ with\n            ``y_pred`` and ``y_pred_proba`` columns appended.\n\
+          \    \"\"\"\n    import json\n    import logging\n    import sys\n    from\
+          \ pathlib import Path\n    from typing import Dict, List\n\n    import numpy\
+          \ as np\n    import pandas as pd\n    import xgboost as xgb\n\n    logging.basicConfig(\n\
+          \        level=logging.INFO,\n        format=\"%(asctime)s | %(name)s |\
+          \ %(levelname)s | %(message)s\",\n        datefmt=\"%Y-%m-%d %H:%M:%S\"\
+          ,\n        handlers=[logging.StreamHandler(sys.stdout)],\n    )\n    logger\
+          \ = logging.getLogger(\"training_component\")\n\n    TARGET_COLUMN = \"\
+          Failure_In_7_Days\"\n    NON_FEATURE_COLUMNS = [TARGET_COLUMN, \"timestamp\"\
+          ]\n\n    DEFAULT_XGB_PARAMS: Dict[str, object] = {\n        \"objective\"\
+          : \"binary:logistic\",\n        \"eval_metric\": \"auc\",\n        \"max_depth\"\
+          : 6,\n        \"learning_rate\": 0.1,\n        \"n_estimators\": 200,\n\
+          \        \"subsample\": 0.8,\n        \"colsample_bytree\": 0.8,\n     \
+          \   \"scale_pos_weight\": 1.0,\n        \"random_state\": 42,\n        \"\
+          use_label_encoder\": False,\n    }\n\n    # ---- Load processed dataset\
+          \ ------------------------------------------\n\n    logger.info(\"Loading\
           \ processed dataset from %s\", processed_dataset.path)\n    df = pd.read_csv(processed_dataset.path)\n\
           \    logger.info(\"Loaded %d rows, %d columns\", len(df), len(df.columns))\n\
+          \n    # ---- Chronological split ---------------------------------------------\n\
           \n    if \"timestamp\" in df.columns:\n        df[\"timestamp\"] = pd.to_datetime(df[\"\
           timestamp\"])\n        df = df.sort_values(\"timestamp\").reset_index(drop=True)\n\
-          \n    split_idx = int(len(df) * (1.0 - test_size))\n    train_df = df.iloc[:split_idx].reset_index(drop=True)\n\
+          \        logger.info(\"Sorted by timestamp for chronological split\")\n\n\
+          \    split_idx = int(len(df) * (1.0 - test_size))\n    train_df = df.iloc[:split_idx].reset_index(drop=True)\n\
           \    test_df = df.iloc[split_idx:].reset_index(drop=True)\n    logger.info(\"\
-          Split: %d train, %d test\", len(train_df), len(test_df))\n\n    drop_cols\
+          Split: %d train, %d test\", len(train_df), len(test_df))\n\n    # ---- Prepare\
+          \ features ------------------------------------------------\n\n    drop_cols\
           \ = [c for c in NON_FEATURE_COLUMNS if c in train_df.columns]\n    X_train\
           \ = train_df.drop(columns=drop_cols)\n    y_train = train_df[TARGET_COLUMN]\n\
           \    X_test = test_df.drop(columns=drop_cols)\n    y_test = test_df[TARGET_COLUMN]\n\
           \    feature_names: List[str] = list(X_train.columns)\n    logger.info(\"\
-          Features (%d): %s\", len(feature_names), feature_names)\n\n    logger.info(\"\
+          Features (%d): %s\", len(feature_names), feature_names)\n\n    # ---- Train\
+          \ -----------------------------------------------------------\n\n    logger.info(\"\
           Training XGBoost with params: %s\", DEFAULT_XGB_PARAMS)\n    model = xgb.XGBClassifier(**DEFAULT_XGB_PARAMS)\n\
           \    model.fit(X_train, y_train, verbose=False)\n    logger.info(\"Training\
-          \ complete\")\n\n    y_pred = model.predict(X_test)\n    y_pred_proba =\
-          \ model.predict_proba(X_test)[:, 1]\n    logger.info(\"Positive prediction\
-          \ rate: %.4f\", float(np.mean(y_pred)))\n\n    model_path = Path(model_artifact.path)\n\
-          \    model_path.parent.mkdir(parents=True, exist_ok=True)\n    model.save_model(str(model_path))\n\
-          \    model_artifact.metadata[\"framework\"] = \"xgboost\"\n    model_artifact.metadata[\"\
+          \ complete\")\n\n    # ---- Predict ---------------------------------------------------------\n\
+          \n    y_pred = model.predict(X_test)\n    y_pred_proba = model.predict_proba(X_test)[:,\
+          \ 1]\n    logger.info(\"Positive prediction rate: %.4f\", float(np.mean(y_pred)))\n\
+          \n    # ---- Persist model artifact ------------------------------------------\n\
+          \n    model_path = Path(model_artifact.path)\n    model_path.parent.mkdir(parents=True,\
+          \ exist_ok=True)\n    model.save_model(str(model_path))\n    model_artifact.metadata[\"\
+          framework\"] = \"xgboost\"\n    model_artifact.metadata[\"n_estimators\"\
+          ] = DEFAULT_XGB_PARAMS[\"n_estimators\"]\n    model_artifact.metadata[\"\
+          max_depth\"] = DEFAULT_XGB_PARAMS[\"max_depth\"]\n    model_artifact.metadata[\"\
           feature_names\"] = json.dumps(feature_names)\n    logger.info(\"Model saved\
-          \ to %s\", model_path)\n\n    test_output = test_df.copy()\n    test_output[\"\
-          y_pred\"] = y_pred\n    test_output[\"y_pred_proba\"] = y_pred_proba\n \
-          \   test_output.to_csv(test_data_artifact.path, index=False)\n    test_data_artifact.metadata[\"\
-          test_row_count\"] = len(test_output)\n    logger.info(\"Test data with predictions\
-          \ written to %s\", test_data_artifact.path)\n\n"
+          \ to %s\", model_path)\n\n    # ---- Persist test data with predictions\
+          \ ------------------------------\n\n    test_output = test_df.copy()\n \
+          \   test_output[\"y_pred\"] = y_pred\n    test_output[\"y_pred_proba\"]\
+          \ = y_pred_proba\n    test_output.to_csv(test_data_artifact.path, index=False)\n\
+          \    test_data_artifact.metadata[\"test_row_count\"] = len(test_output)\n\
+          \    logger.info(\"Test data with predictions written to %s\", test_data_artifact.path)\n\
+          \n"
         image: python:3.9
 pipelineInfo:
   description: "End-to-end ML pipeline for predicting GPON router failures within\
