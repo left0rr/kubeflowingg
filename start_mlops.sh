@@ -29,7 +29,22 @@ kubectl create configmap mlops-endpoints \
   -n kubeflow \
   --dry-run=client -o yaml | kubectl apply -f -
 
+echo "=== Reloading kfp-base image into KIND ==="
+if docker image inspect kfp-base:latest > /dev/null 2>&1; then
+  kind load docker-image kfp-base:latest --name mlops-cluster
+  echo "kfp-base:latest loaded into KIND"
+else
+  echo "kfp-base:latest not found locally — building it now..."
+  docker build -f Dockerfile.kfp-base -t kfp-base:latest .
+  kind load docker-image kfp-base:latest --name mlops-cluster
+  echo "kfp-base:latest built and loaded into KIND"
+fi
+
+echo ""
 echo "=== Done! ==="
 echo "MLflow UI : http://localhost:5000"
 echo "MinIO  UI : http://localhost:9001"
 echo "KFP    UI : http://localhost:8080"
+echo ""
+echo "MLflow tracking URI for pods : http://${MLFLOW_IP}:5000"
+echo "MinIO endpoint for pods      : http://${MINIO_IP}:9000"

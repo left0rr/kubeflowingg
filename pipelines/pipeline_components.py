@@ -287,7 +287,7 @@ def evaluation_component(
 
 @dsl.component(
     base_image="kfp-base:latest",
-    packages_to_install=["mlflow==2.12.1", "matplotlib==3.8.4"],
+    packages_to_install=[],
 )
 def registration_component(
     model_artifact: Input[Model],

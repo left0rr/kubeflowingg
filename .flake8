@@ -1,0 +1,23 @@
+[flake8]
+max-line-length = 120
+exclude =
+    .git,
+    __pycache__,
+    venv,
+    venv311,
+    .venv,
+    *.egg-info,
+    build,
+    dist,
+    data/
+per-file-ignores =
+    # pipeline .bak files are intentionally broken backups — ignore entirely
+    pipelines/*.bak:E,W,F
+    src/training/register_model.py.bak:E,W,F
+    monitoring/drift_detection.py.bak:E,W,F
+ignore =
+    # W503: line break before binary operator (conflicts with Black)
+    W503,
+    # E501 is handled by max-line-length above
+    # E402: module level import not at top (KFP components need imports inside functions)
+    E402
