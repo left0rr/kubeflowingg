@@ -1,0 +1,35 @@
+#!/bin/bash
+set -e
+
+echo "=== Starting Docker Compose services ==="
+cd ~/Desktop/kubeflowing/kubeflowingg
+make docker-up
+sleep 10
+
+echo "=== Connecting to KIND network ==="
+docker network connect kind mlflow-server 2>/dev/null || true
+docker network connect kind mlflow-minio 2>/dev/null || true
+sleep 3
+
+echo "=== Detecting IPs ==="
+MLFLOW_IP=$(docker inspect mlflow-server \
+  --format '{{range $k,$v := .NetworkSettings.Networks}}{{if eq $k "kind"}}{{$v.IPAddress}}{{end}}{{end}}')
+MINIO_IP=$(docker inspect mlflow-minio \
+  --format '{{range $k,$v := .NetworkSettings.Networks}}{{if eq $k "kind"}}{{$v.IPAddress}}{{end}}{{end}}')
+
+echo "MLflow IP : $MLFLOW_IP"
+echo "MinIO  IP : $MINIO_IP"
+
+echo "=== Updating Kubernetes ConfigMap ==="
+kubectl create configmap mlops-endpoints \
+  --from-literal=MLFLOW_TRACKING_URI=http://${MLFLOW_IP}:5000 \
+  --from-literal=MLFLOW_S3_ENDPOINT_URL=http://${MINIO_IP}:9000 \
+  --from-literal=AWS_ACCESS_KEY_ID=minio \
+  --from-literal=AWS_SECRET_ACCESS_KEY=minio123 \
+  -n kubeflow \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+echo "=== Done! ==="
+echo "MLflow UI : http://localhost:5000"
+echo "MinIO  UI : http://localhost:9001"
+echo "KFP    UI : http://localhost:8080"

@@ -1,9 +1,11 @@
 # PIPELINE DEFINITION
 # Name: gpon-failure-prediction-pipeline
-# Description: End-to-end ML pipeline for predicting GPON router failures within a 7-day horizon.  Stages: ingestion → training → evaluation.
+# Description: End-to-end ML pipeline for predicting GPON router failures within a 7-day horizon. Stages: ingestion → training → evaluation → MLflow registration.
 # Inputs:
 #    auc_threshold: float [Default: 0.75]
+#    experiment_name: str [Default: 'gpon-failure-prediction']
 #    input_csv_path: str [Default: 's3://gpon-telemetry/raw/telemetry.csv']
+#    model_name: str [Default: 'gpon-xgboost-classifier']
 #    test_size: float [Default: 0.2]
 components:
   comp-evaluation-component:
@@ -14,12 +16,8 @@ components:
           artifactType:
             schemaTitle: system.Dataset
             schemaVersion: 0.0.1
-          description: 'KFP input artifact -- test CSV with
-
-            prediction columns from ``training_component``.'
       parameters:
         auc_threshold:
-          description: Minimum AUC-ROC required for the model to pass.
           parameterType: NUMBER_DOUBLE
     outputDefinitions:
       artifacts:
@@ -35,7 +33,6 @@ components:
     inputDefinitions:
       parameters:
         input_csv_path:
-          description: GCS / S3 / local path to the raw telemetry CSV.
           parameterType: STRING
     outputDefinitions:
       artifacts:
@@ -43,6 +40,23 @@ components:
           artifactType:
             schemaTitle: system.Dataset
             schemaVersion: 0.0.1
+  comp-registration-component:
+    executorLabel: exec-registration-component
+    inputDefinitions:
+      artifacts:
+        model_artifact:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+        test_data_artifact:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+      parameters:
+        experiment_name:
+          parameterType: STRING
+        model_name:
+          parameterType: STRING
   comp-training-component:
     executorLabel: exec-training-component
     inputDefinitions:
@@ -94,48 +108,35 @@ deploymentSpec:
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
           \ *\n\ndef evaluation_component(\n    test_data_artifact: Input[Dataset],\n\
           \    auc_threshold: float,\n    metrics_artifact: Output[Metrics],\n) ->\
-          \ bool:\n    \"\"\"Evaluate XGBoost predictions and gate on AUC-ROC threshold.\n\
-          \n    Reads the test CSV (with ``y_pred`` and ``y_pred_proba`` columns\n\
-          \    produced by ``training_component``), computes AUC-ROC, precision,\n\
-          \    recall, and F1, logs them to the KFP Metrics artifact, and returns\n\
-          \    whether the model passes the AUC gate.\n\n    Args:\n        test_data_artifact:\
-          \ KFP input artifact -- test CSV with\n            prediction columns from\
-          \ ``training_component``.\n        auc_threshold: Minimum AUC-ROC required\
-          \ for the model to pass.\n        metrics_artifact: KFP output artifact\
-          \ for logged metrics.\n\n    Returns:\n        ``True`` if AUC-ROC >= *auc_threshold*,\
-          \ ``False`` otherwise.\n    \"\"\"\n    import logging\n    import sys\n\
-          \n    import numpy as np\n    import pandas as pd\n    from sklearn.metrics\
-          \ import (\n        f1_score,\n        precision_score,\n        recall_score,\n\
-          \        roc_auc_score,\n    )\n\n    logging.basicConfig(\n        level=logging.INFO,\n\
+          \ bool:\n    \"\"\"Evaluate XGBoost predictions and gate on AUC-ROC threshold.\"\
+          \"\"\n    import logging\n    import sys\n\n    import numpy as np\n   \
+          \ import pandas as pd\n    from sklearn.metrics import f1_score, precision_score,\
+          \ recall_score, roc_auc_score\n\n    logging.basicConfig(\n        level=logging.INFO,\n\
           \        format=\"%(asctime)s | %(name)s | %(levelname)s | %(message)s\"\
           ,\n        datefmt=\"%Y-%m-%d %H:%M:%S\",\n        handlers=[logging.StreamHandler(sys.stdout)],\n\
-          \    )\n    logger = logging.getLogger(\"evaluation_component\")\n\n   \
-          \ TARGET_COLUMN = \"Failure_In_7_Days\"\n\n    # ---- Load test data --------------------------------------------------\n\
-          \n    logger.info(\"Loading test data from %s\", test_data_artifact.path)\n\
-          \    test_df = pd.read_csv(test_data_artifact.path)\n    logger.info(\"\
-          Loaded %d test rows\", len(test_df))\n\n    y_true = test_df[TARGET_COLUMN].values\n\
-          \    y_pred = test_df[\"y_pred\"].values\n    y_pred_proba = test_df[\"\
-          y_pred_proba\"].values\n\n    # ---- Compute metrics -------------------------------------------------\n\
-          \n    auc_roc = float(roc_auc_score(y_true, y_pred_proba))\n    precision\
-          \ = float(precision_score(y_true, y_pred, zero_division=0.0))\n    recall\
-          \ = float(recall_score(y_true, y_pred, zero_division=0.0))\n    f1 = float(f1_score(y_true,\
-          \ y_pred, zero_division=0.0))\n    positive_rate = float(np.mean(y_pred))\n\
-          \n    logger.info(\"AUC-ROC   : %.4f\", auc_roc)\n    logger.info(\"Precision\
-          \ : %.4f\", precision)\n    logger.info(\"Recall    : %.4f\", recall)\n\
-          \    logger.info(\"F1 Score  : %.4f\", f1)\n    logger.info(\"Pos. Rate\
-          \ : %.4f\", positive_rate)\n\n    # ---- Log to KFP Metrics artifact -------------------------------------\n\
-          \n    metrics_artifact.log_metric(\"auc_roc\", auc_roc)\n    metrics_artifact.log_metric(\"\
-          precision\", precision)\n    metrics_artifact.log_metric(\"recall\", recall)\n\
-          \    metrics_artifact.log_metric(\"f1_score\", f1)\n    metrics_artifact.log_metric(\"\
-          positive_rate\", positive_rate)\n    metrics_artifact.log_metric(\"test_row_count\"\
-          , float(len(test_df)))\n    metrics_artifact.log_metric(\"auc_threshold\"\
-          , auc_threshold)\n\n    # ---- Gate decision ---------------------------------------------------\n\
-          \n    passed = auc_roc >= auc_threshold\n    metrics_artifact.log_metric(\"\
-          passed_gate\", float(passed))\n\n    if passed:\n        logger.info(\n\
-          \            \"PASSED: AUC-ROC %.4f >= threshold %.4f\", auc_roc, auc_threshold\n\
-          \        )\n    else:\n        logger.warning(\n            \"FAILED: AUC-ROC\
-          \ %.4f < threshold %.4f\", auc_roc, auc_threshold\n        )\n\n    return\
-          \ passed\n\n"
+          \    )\n    logger = logging.getLogger(\"evaluation_component\")\n    TARGET_COLUMN\
+          \ = \"Failure_In_7_Days\"\n\n    logger.info(\"Loading test data from %s\"\
+          , test_data_artifact.path)\n    test_df = pd.read_csv(test_data_artifact.path)\n\
+          \    logger.info(\"Loaded %d test rows\", len(test_df))\n\n    y_true =\
+          \ test_df[TARGET_COLUMN].values\n    y_pred = test_df[\"y_pred\"].values\n\
+          \    y_pred_proba = test_df[\"y_pred_proba\"].values\n\n    auc_roc = float(roc_auc_score(y_true,\
+          \ y_pred_proba))\n    precision = float(precision_score(y_true, y_pred,\
+          \ zero_division=0.0))\n    recall = float(recall_score(y_true, y_pred, zero_division=0.0))\n\
+          \    f1 = float(f1_score(y_true, y_pred, zero_division=0.0))\n    positive_rate\
+          \ = float(np.mean(y_pred))\n\n    logger.info(\"AUC-ROC   : %.4f\", auc_roc)\n\
+          \    logger.info(\"Precision : %.4f\", precision)\n    logger.info(\"Recall\
+          \    : %.4f\", recall)\n    logger.info(\"F1 Score  : %.4f\", f1)\n    logger.info(\"\
+          Pos. Rate : %.4f\", positive_rate)\n\n    metrics_artifact.log_metric(\"\
+          auc_roc\", auc_roc)\n    metrics_artifact.log_metric(\"precision\", precision)\n\
+          \    metrics_artifact.log_metric(\"recall\", recall)\n    metrics_artifact.log_metric(\"\
+          f1_score\", f1)\n    metrics_artifact.log_metric(\"positive_rate\", positive_rate)\n\
+          \    metrics_artifact.log_metric(\"test_row_count\", float(len(test_df)))\n\
+          \    metrics_artifact.log_metric(\"auc_threshold\", auc_threshold)\n\n \
+          \   passed = auc_roc >= auc_threshold\n    metrics_artifact.log_metric(\"\
+          passed_gate\", float(passed))\n\n    if passed:\n        logger.info(\"\
+          PASSED: AUC-ROC %.4f >= threshold %.4f\", auc_roc, auc_threshold)\n    else:\n\
+          \        logger.warning(\"FAILED: AUC-ROC %.4f < threshold %.4f\", auc_roc,\
+          \ auc_threshold)\n\n    return passed\n\n"
         image: kfp-base:latest
     exec-ingestion-component:
       container:
@@ -165,51 +166,40 @@ deploymentSpec:
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
           \ *\n\ndef ingestion_component(\n    input_csv_path: str,\n    processed_dataset:\
           \ Output[Dataset],\n) -> None:\n    \"\"\"Ingest and validate raw GPON telemetry\
-          \ data.\n\n    Loads raw CSV telemetry, validates each row against the Pydantic\n\
-          \    ``TelemetryRecord`` schema, applies feature engineering (voltage\n\
-          \    normalisation, rolling RX-power stats), and writes the processed\n\
-          \    DataFrame as a CSV artifact.\n\n    Args:\n        input_csv_path:\
-          \ GCS / S3 / local path to the raw telemetry CSV.\n        processed_dataset:\
-          \ KFP output artifact for the processed CSV.\n    \"\"\"\n    import logging\n\
-          \    import sys\n    from pathlib import Path\n    from typing import List,\
-          \ Tuple\n\n    import pandas as pd\n    from pydantic import BaseModel,\
-          \ Field, ValidationError, field_validator\n\n    logging.basicConfig(\n\
-          \        level=logging.INFO,\n        format=\"%(asctime)s | %(name)s |\
-          \ %(levelname)s | %(message)s\",\n        datefmt=\"%Y-%m-%d %H:%M:%S\"\
-          ,\n        handlers=[logging.StreamHandler(sys.stdout)],\n    )\n    logger\
-          \ = logging.getLogger(\"ingestion_component\")\n\n    # ---- Inline validation\
-          \ schema ----------------------------------------\n\n    class TelemetryRecord(BaseModel):\n\
-          \        \"\"\"Pydantic schema mirroring src.data.validation.TelemetryRecord.\"\
-          \"\"\n\n        Optical_RX_Power_dBm: float = Field(..., ge=-40.0, le=0.0)\n\
-          \        Optical_TX_Power_dBm: float = Field(..., ge=-10.0, le=10.0)\n \
-          \       Temperature_C: float = Field(..., ge=-40.0, le=125.0)\n        Voltage_mV:\
-          \ float = Field(..., ge=0.0, le=5000.0)\n        Bias_Current_mA: float\
-          \ = Field(..., ge=0.0, le=200.0)\n        Interface_Error_Count: int = Field(...,\
-          \ ge=0)\n        Reboot_Count_Last_7D: int = Field(..., ge=0)\n        Connected_Devices:\
-          \ int = Field(..., ge=0)\n        Device_Age_Days: int = Field(..., ge=0)\n\
-          \        Maintenance_Count_Last_30D: int = Field(..., ge=0)\n        Failure_In_7_Days:\
-          \ int = Field(..., ge=0, le=1)\n\n        @field_validator(\"Failure_In_7_Days\"\
-          )\n        @classmethod\n        def validate_binary_target(cls, v: int)\
-          \ -> int:\n            if v not in (0, 1):\n                raise ValueError(\"\
-          Failure_In_7_Days must be 0 or 1\")\n            return v\n\n    # ----\
-          \ Inline feature engineering --------------------------------------\n\n\
-          \    def normalize_voltage(df: pd.DataFrame) -> pd.DataFrame:\n        df\
-          \ = df.copy()\n        df[\"Voltage_V\"] = df[\"Voltage_mV\"] / 1000.0\n\
-          \        df = df.drop(columns=[\"Voltage_mV\"])\n        return df\n\n \
-          \   def compute_rx_power_rolling_features(\n        df: pd.DataFrame,\n\
-          \        window: str = \"24h\",\n        timestamp_col: str = \"timestamp\"\
-          ,\n    ) -> pd.DataFrame:\n        df = df.copy()\n        df[timestamp_col]\
-          \ = pd.to_datetime(df[timestamp_col])\n        df = df.sort_values(timestamp_col).set_index(timestamp_col)\n\
-          \        rolling = df[\"Optical_RX_Power_dBm\"].rolling(window=window, min_periods=1)\n\
+          \ data.\"\"\"\n    import logging\n    import os\n    import sys\n    import\
+          \ tempfile\n    from typing import List\n    from urllib.parse import urlparse\n\
+          \n    import boto3\n    from botocore.config import Config\n    import pandas\
+          \ as pd\n    from pydantic import BaseModel, Field, ValidationError, field_validator\n\
+          \n    logging.basicConfig(\n        level=logging.INFO,\n        format=\"\
+          %(asctime)s | %(name)s | %(levelname)s | %(message)s\",\n        datefmt=\"\
+          %Y-%m-%d %H:%M:%S\",\n        handlers=[logging.StreamHandler(sys.stdout)],\n\
+          \    )\n    logger = logging.getLogger(\"ingestion_component\")\n\n    class\
+          \ TelemetryRecord(BaseModel):\n        Optical_RX_Power_dBm: float = Field(...,\
+          \ ge=-40.0, le=0.0)\n        Optical_TX_Power_dBm: float = Field(..., ge=-10.0,\
+          \ le=10.0)\n        Temperature_C: float = Field(..., ge=-40.0, le=125.0)\n\
+          \        Voltage_mV: float = Field(..., ge=0.0, le=5000.0)\n        Bias_Current_mA:\
+          \ float = Field(..., ge=0.0, le=200.0)\n        Interface_Error_Count: int\
+          \ = Field(..., ge=0)\n        Reboot_Count_Last_7D: int = Field(..., ge=0)\n\
+          \        Connected_Devices: int = Field(..., ge=0)\n        Device_Age_Days:\
+          \ int = Field(..., ge=0)\n        Maintenance_Count_Last_30D: int = Field(...,\
+          \ ge=0)\n        Failure_In_7_Days: int = Field(..., ge=0, le=1)\n\n   \
+          \     @field_validator(\"Failure_In_7_Days\")\n        @classmethod\n  \
+          \      def validate_binary_target(cls, v: int) -> int:\n            if v\
+          \ not in (0, 1):\n                raise ValueError(\"Failure_In_7_Days must\
+          \ be 0 or 1\")\n            return v\n\n    def normalize_voltage(df: pd.DataFrame)\
+          \ -> pd.DataFrame:\n        df = df.copy()\n        df[\"Voltage_V\"] =\
+          \ df[\"Voltage_mV\"] / 1000.0\n        return df.drop(columns=[\"Voltage_mV\"\
+          ])\n\n    def compute_rx_power_rolling_features(\n        df: pd.DataFrame,\
+          \ window: str = \"24h\", timestamp_col: str = \"timestamp\"\n    ) -> pd.DataFrame:\n\
+          \        df = df.copy()\n        df[timestamp_col] = pd.to_datetime(df[timestamp_col])\n\
+          \        df = df.sort_values(timestamp_col).set_index(timestamp_col)\n \
+          \       rolling = df[\"Optical_RX_Power_dBm\"].rolling(window=window, min_periods=1)\n\
           \        df[\"RX_Power_Rolling_Mean_dBm\"] = rolling.mean()\n        df[\"\
-          RX_Power_Rolling_Std_dBm\"] = rolling.std().fillna(0.0)\n        df = df.reset_index()\n\
-          \        return df\n\n    # ---- Load CSV --------------------------------------------------------\n\
-          \n    import os\n    import tempfile\n    import boto3\n    from urllib.parse\
-          \ import urlparse\n    from botocore.config import Config\n\n    logger.info(\"\
-          Loading raw CSV from %s\", input_csv_path)\n\n    parsed = urlparse(input_csv_path)\n\
-          \    if parsed.scheme == \"s3\":\n        s3_endpoint = os.environ.get(\"\
-          MLFLOW_S3_ENDPOINT_URL\", \"http://172.19.0.1:9000\")\n        s3_client\
-          \ = boto3.client(\n            \"s3\",\n            endpoint_url=s3_endpoint,\n\
+          RX_Power_Rolling_Std_dBm\"] = rolling.std().fillna(0.0)\n        return\
+          \ df.reset_index()\n\n    logger.info(\"Loading raw CSV from %s\", input_csv_path)\n\
+          \    parsed = urlparse(input_csv_path)\n\n    if parsed.scheme == \"s3\"\
+          :\n        s3_endpoint = os.environ.get(\"MLFLOW_S3_ENDPOINT_URL\")\n  \
+          \      s3_client = boto3.client(\n            \"s3\",\n            endpoint_url=s3_endpoint,\n\
           \            aws_access_key_id=os.environ.get(\"AWS_ACCESS_KEY_ID\", \"\
           minio\"),\n            aws_secret_access_key=os.environ.get(\"AWS_SECRET_ACCESS_KEY\"\
           , \"minio123\"),\n            region_name=\"us-east-1\",\n            config=Config(signature_version=\"\
@@ -217,30 +207,109 @@ deploymentSpec:
           /\")\n        with tempfile.NamedTemporaryFile(suffix=\".csv\", delete=False)\
           \ as tmp:\n            tmp_path = tmp.name\n        s3_client.download_file(bucket,\
           \ key, tmp_path)\n        logger.info(\"Downloaded s3://%s/%s to %s\", bucket,\
-          \ key, tmp_path)\n        raw_df = pd.read_csv(tmp_path)\n    else:\n  \
-          \      raw_df = pd.read_csv(input_csv_path)\n\n    logger.info(\"Loaded\
-          \ %d rows, %d columns\", len(raw_df), len(raw_df.columns))\n\n    # ----\
-          \ Validate --------------------------------------------------------\n\n\
-          \    valid_rows: List[dict] = []\n    invalid_indices: List[int] = []\n\n\
-          \    for idx, row in raw_df.iterrows():\n        try:\n            record\
-          \ = TelemetryRecord(**row.to_dict())\n            valid_rows.append(record.model_dump())\n\
-          \        except ValidationError as exc:\n            invalid_indices.append(int(idx))\n\
-          \            logger.warning(\"Row %d failed validation: %s errors\", idx,\
-          \ exc.error_count())\n\n    valid_df = pd.DataFrame(valid_rows)\n    logger.info(\n\
-          \        \"Validation: %d valid, %d invalid out of %d total\",\n       \
-          \ len(valid_rows), len(invalid_indices), len(raw_df),\n    )\n\n    if valid_df.empty:\n\
-          \        raise RuntimeError(\"No valid records after validation. Aborting.\"\
-          )\n\n    # ---- Feature engineering ---------------------------------------------\n\
-          \n    valid_df = normalize_voltage(valid_df)\n    logger.info(\"Voltage\
-          \ normalised (mV -> V)\")\n\n    if \"timestamp\" in valid_df.columns:\n\
-          \        valid_df = compute_rx_power_rolling_features(valid_df)\n      \
-          \  logger.info(\"Rolling RX power features computed (24 h window)\")\n\n\
-          \    # ---- Persist artifact ------------------------------------------------\n\
-          \n    valid_df.to_csv(processed_dataset.path, index=False)\n    processed_dataset.metadata[\"\
+          \ key, tmp_path)\n        raw_df = pd.read_csv(tmp_path)\n        os.unlink(tmp_path)\n\
+          \    else:\n        raw_df = pd.read_csv(input_csv_path)\n\n    logger.info(\"\
+          Loaded %d rows, %d columns\", len(raw_df), len(raw_df.columns))\n\n    valid_rows:\
+          \ List[dict] = []\n    invalid_indices: List[int] = []\n    for idx, row\
+          \ in raw_df.iterrows():\n        try:\n            record = TelemetryRecord(**row.to_dict())\n\
+          \            valid_rows.append(record.model_dump())\n        except ValidationError\
+          \ as exc:\n            invalid_indices.append(int(idx))\n            logger.warning(\"\
+          Row %d failed validation: %s errors\", idx, exc.error_count())\n\n    valid_df\
+          \ = pd.DataFrame(valid_rows)\n    logger.info(\"Validation: %d valid, %d\
+          \ invalid out of %d total\",\n                len(valid_rows), len(invalid_indices),\
+          \ len(raw_df))\n\n    if valid_df.empty:\n        raise RuntimeError(\"\
+          No valid records after validation. Aborting.\")\n\n    valid_df = normalize_voltage(valid_df)\n\
+          \    logger.info(\"Voltage normalised (mV -> V)\")\n\n    if \"timestamp\"\
+          \ in valid_df.columns:\n        valid_df = compute_rx_power_rolling_features(valid_df)\n\
+          \        logger.info(\"Rolling RX power features computed (24 h window)\"\
+          )\n\n    valid_df.to_csv(processed_dataset.path, index=False)\n    processed_dataset.metadata[\"\
           row_count\"] = len(valid_df)\n    processed_dataset.metadata[\"column_count\"\
           ] = len(valid_df.columns)\n    processed_dataset.metadata[\"invalid_row_count\"\
           ] = len(invalid_indices)\n    logger.info(\"Processed dataset written to\
           \ %s\", processed_dataset.path)\n\n"
+        image: kfp-base:latest
+    exec-registration-component:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - registration_component
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'mlflow==2.12.1'\
+          \ 'matplotlib==3.8.4'  &&  python3 -m pip install --quiet --no-warn-script-location\
+          \ 'kfp==2.16.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
+          3.9\"' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef registration_component(\n    model_artifact: Input[Model],\n\
+          \    test_data_artifact: Input[Dataset],\n    experiment_name: str,\n  \
+          \  model_name: str,\n) -> None:\n    \"\"\"Log metrics, artifacts, and register\
+          \ the model in MLflow.\"\"\"\n    import json\n    import logging\n    import\
+          \ os\n    import sys\n    import tempfile\n\n    import matplotlib\n   \
+          \ matplotlib.use(\"Agg\")\n    import matplotlib.pyplot as plt\n    import\
+          \ mlflow\n    import mlflow.xgboost\n    import numpy as np\n    import\
+          \ pandas as pd\n    import xgboost as xgb\n    from sklearn.metrics import\
+          \ f1_score, precision_score, recall_score, roc_auc_score\n\n    logging.basicConfig(\n\
+          \        level=logging.INFO,\n        format=\"%(asctime)s | %(name)s |\
+          \ %(levelname)s | %(message)s\",\n        datefmt=\"%Y-%m-%d %H:%M:%S\"\
+          ,\n        handlers=[logging.StreamHandler(sys.stdout)],\n    )\n    logger\
+          \ = logging.getLogger(\"registration_component\")\n\n    # Point MLflow\
+          \ artifact store at MinIO\n    # All env vars injected from mlops-endpoints\
+          \ ConfigMap by kubeflow_pipeline.py\n\n    mlflow_tracking_uri = os.environ[\"\
+          MLFLOW_TRACKING_URI\"]\n    mlflow.set_tracking_uri(mlflow_tracking_uri)\n\
+          \    mlflow.set_experiment(experiment_name)\n    logger.info(\"MLflow tracking\
+          \ URI : %s\", mlflow_tracking_uri)\n    logger.info(\"MLflow experiment\
+          \   : %s\", experiment_name)\n\n    # Load model\n    logger.info(\"Loading\
+          \ model from %s\", model_artifact.path)\n    model = xgb.XGBClassifier()\n\
+          \    model.load_model(model_artifact.path)\n    feature_names = json.loads(model_artifact.metadata.get(\"\
+          feature_names\", \"[]\"))\n    logger.info(\"Model loaded. Features: %s\"\
+          , feature_names)\n\n    # Load test data\n    logger.info(\"Loading test\
+          \ data from %s\", test_data_artifact.path)\n    test_df = pd.read_csv(test_data_artifact.path)\n\
+          \    y_true = test_df[\"Failure_In_7_Days\"].values\n    y_pred = test_df[\"\
+          y_pred\"].values\n    y_pred_proba = test_df[\"y_pred_proba\"].values\n\n\
+          \    # Compute metrics\n    metrics = {\n        \"test_auc_roc\":     \
+          \  float(roc_auc_score(y_true, y_pred_proba)),\n        \"test_precision\"\
+          :     float(precision_score(y_true, y_pred, zero_division=0.0)),\n     \
+          \   \"test_recall\":        float(recall_score(y_true, y_pred, zero_division=0.0)),\n\
+          \        \"test_f1\":            float(f1_score(y_true, y_pred, zero_division=0.0)),\n\
+          \        \"test_positive_rate\": float(np.mean(y_pred)),\n        \"test_size\"\
+          :          float(len(test_df)),\n    }\n    for k, v in metrics.items():\n\
+          \        logger.info(\"%-25s: %.4f\", k, v)\n\n    # Feature importance\
+          \ plot\n    importances = model.feature_importances_\n    sorted_idx = np.argsort(importances)\n\
+          \    fig, ax = plt.subplots(figsize=(10, 8))\n    ax.barh(\n        [feature_names[i]\
+          \ for i in sorted_idx],\n        importances[sorted_idx],\n        color=\"\
+          #2196F3\",\n        edgecolor=\"#1565C0\",\n    )\n    ax.set_xlabel(\"\
+          Feature Importance (gain)\")\n    ax.set_title(\"XGBoost Feature Importance\
+          \ \u2014 GPON Failure Prediction\")\n    ax.spines[\"top\"].set_visible(False)\n\
+          \    ax.spines[\"right\"].set_visible(False)\n    plt.tight_layout()\n \
+          \   plot_path = tempfile.mktemp(suffix=\"_feature_importance.png\")\n  \
+          \  fig.savefig(plot_path, dpi=150, bbox_inches=\"tight\")\n    plt.close(fig)\n\
+          \    logger.info(\"Feature importance plot saved to %s\", plot_path)\n\n\
+          \    # Log to MLflow and register model\n    with mlflow.start_run(run_name=\"\
+          kfp-xgboost-gpon-failure\") as run:\n        logger.info(\"MLflow run ID:\
+          \ %s\", run.info.run_id)\n        mlflow.log_metrics(metrics)\n        mlflow.log_param(\"\
+          feature_count\", len(feature_names))\n        mlflow.log_param(\"feature_names\"\
+          , str(feature_names))\n        mlflow.log_param(\"source\", \"kubeflow-pipeline\"\
+          )\n        mlflow.log_artifact(plot_path, artifact_path=\"plots\")\n   \
+          \     mlflow.xgboost.log_model(\n            xgb_model=model,\n        \
+          \    artifact_path=\"model\",\n            registered_model_name=model_name,\n\
+          \        )\n        logger.info(\"Model registered in MLflow as '%s'\",\
+          \ model_name)\n        logger.info(\"AUC-ROC : %.4f\", metrics[\"test_auc_roc\"\
+          ])\n        logger.info(\"F1 Score: %.4f\", metrics[\"test_f1\"])\n\n"
         image: kfp-base:latest
     exec-training-component:
       container:
@@ -271,69 +340,49 @@ deploymentSpec:
           \ *\n\ndef training_component(\n    processed_dataset: Input[Dataset],\n\
           \    test_size: float,\n    model_artifact: Output[Model],\n    test_data_artifact:\
           \ Output[Dataset],\n) -> None:\n    \"\"\"Train an XGBoost classifier on\
-          \ processed GPON telemetry data.\n\n    Performs a chronological train/test\
-          \ split, trains an XGBoost binary\n    classifier for ``Failure_In_7_Days``,\
-          \ serialises the model as a\n    JSON artifact, and writes the test set\
-          \ with predictions for\ndownstream evaluation.\n\n    Args:\n        processed_dataset:\
-          \ KFP input artifact -- processed CSV from\n            ``ingestion_component``.\n\
-          \        test_size: Fraction of data reserved for the test set (0-1).\n\
-          \        model_artifact: KFP output artifact for the serialised XGBoost\
-          \ model.\n        test_data_artifact: KFP output artifact for the test CSV\
-          \ with\n            ``y_pred`` and ``y_pred_proba`` columns appended.\n\
-          \    \"\"\"\n    import json\n    import logging\n    import sys\n    from\
-          \ pathlib import Path\n    from typing import Dict, List\n\n    import numpy\
-          \ as np\n    import pandas as pd\n    import xgboost as xgb\n\n    logging.basicConfig(\n\
-          \        level=logging.INFO,\n        format=\"%(asctime)s | %(name)s |\
-          \ %(levelname)s | %(message)s\",\n        datefmt=\"%Y-%m-%d %H:%M:%S\"\
-          ,\n        handlers=[logging.StreamHandler(sys.stdout)],\n    )\n    logger\
-          \ = logging.getLogger(\"training_component\")\n\n    TARGET_COLUMN = \"\
-          Failure_In_7_Days\"\n    NON_FEATURE_COLUMNS = [TARGET_COLUMN, \"timestamp\"\
-          ]\n\n    DEFAULT_XGB_PARAMS: Dict[str, object] = {\n        \"objective\"\
-          : \"binary:logistic\",\n        \"eval_metric\": \"auc\",\n        \"max_depth\"\
-          : 6,\n        \"learning_rate\": 0.1,\n        \"n_estimators\": 200,\n\
-          \        \"subsample\": 0.8,\n        \"colsample_bytree\": 0.8,\n     \
-          \   \"scale_pos_weight\": 1.0,\n        \"random_state\": 42,\n        \"\
-          use_label_encoder\": False,\n    }\n\n    # ---- Load processed dataset\
-          \ ------------------------------------------\n\n    logger.info(\"Loading\
+          \ processed GPON telemetry data.\"\"\"\n    import json\n    import logging\n\
+          \    import sys\n    from pathlib import Path\n    from typing import Dict,\
+          \ List\n\n    import numpy as np\n    import pandas as pd\n    import xgboost\
+          \ as xgb\n\n    logging.basicConfig(\n        level=logging.INFO,\n    \
+          \    format=\"%(asctime)s | %(name)s | %(levelname)s | %(message)s\",\n\
+          \        datefmt=\"%Y-%m-%d %H:%M:%S\",\n        handlers=[logging.StreamHandler(sys.stdout)],\n\
+          \    )\n    logger = logging.getLogger(\"training_component\")\n\n    TARGET_COLUMN\
+          \ = \"Failure_In_7_Days\"\n    NON_FEATURE_COLUMNS = [TARGET_COLUMN, \"\
+          timestamp\"]\n    DEFAULT_XGB_PARAMS: Dict[str, object] = {\n        \"\
+          objective\": \"binary:logistic\",\n        \"eval_metric\": \"auc\",\n \
+          \       \"max_depth\": 6,\n        \"learning_rate\": 0.1,\n        \"n_estimators\"\
+          : 200,\n        \"subsample\": 0.8,\n        \"colsample_bytree\": 0.8,\n\
+          \        \"scale_pos_weight\": 1.0,\n        \"random_state\": 42,\n   \
+          \     \"use_label_encoder\": False,\n    }\n\n    logger.info(\"Loading\
           \ processed dataset from %s\", processed_dataset.path)\n    df = pd.read_csv(processed_dataset.path)\n\
           \    logger.info(\"Loaded %d rows, %d columns\", len(df), len(df.columns))\n\
-          \n    # ---- Chronological split ---------------------------------------------\n\
           \n    if \"timestamp\" in df.columns:\n        df[\"timestamp\"] = pd.to_datetime(df[\"\
           timestamp\"])\n        df = df.sort_values(\"timestamp\").reset_index(drop=True)\n\
-          \        logger.info(\"Sorted by timestamp for chronological split\")\n\n\
-          \    split_idx = int(len(df) * (1.0 - test_size))\n    train_df = df.iloc[:split_idx].reset_index(drop=True)\n\
+          \n    split_idx = int(len(df) * (1.0 - test_size))\n    train_df = df.iloc[:split_idx].reset_index(drop=True)\n\
           \    test_df = df.iloc[split_idx:].reset_index(drop=True)\n    logger.info(\"\
-          Split: %d train, %d test\", len(train_df), len(test_df))\n\n    # ---- Prepare\
-          \ features ------------------------------------------------\n\n    drop_cols\
+          Split: %d train, %d test\", len(train_df), len(test_df))\n\n    drop_cols\
           \ = [c for c in NON_FEATURE_COLUMNS if c in train_df.columns]\n    X_train\
           \ = train_df.drop(columns=drop_cols)\n    y_train = train_df[TARGET_COLUMN]\n\
-          \    X_test = test_df.drop(columns=drop_cols)\n    y_test = test_df[TARGET_COLUMN]\n\
-          \    feature_names: List[str] = list(X_train.columns)\n    logger.info(\"\
-          Features (%d): %s\", len(feature_names), feature_names)\n\n    # ---- Train\
-          \ -----------------------------------------------------------\n\n    logger.info(\"\
-          Training XGBoost with params: %s\", DEFAULT_XGB_PARAMS)\n    model = xgb.XGBClassifier(**DEFAULT_XGB_PARAMS)\n\
+          \    X_test = test_df.drop(columns=drop_cols)\n    feature_names: List[str]\
+          \ = list(X_train.columns)\n    logger.info(\"Features (%d): %s\", len(feature_names),\
+          \ feature_names)\n\n    model = xgb.XGBClassifier(**DEFAULT_XGB_PARAMS)\n\
           \    model.fit(X_train, y_train, verbose=False)\n    logger.info(\"Training\
-          \ complete\")\n\n    # ---- Predict ---------------------------------------------------------\n\
-          \n    y_pred = model.predict(X_test)\n    y_pred_proba = model.predict_proba(X_test)[:,\
-          \ 1]\n    logger.info(\"Positive prediction rate: %.4f\", float(np.mean(y_pred)))\n\
-          \n    # ---- Persist model artifact ------------------------------------------\n\
-          \n    model_path = Path(model_artifact.path)\n    model_path.parent.mkdir(parents=True,\
-          \ exist_ok=True)\n    model.save_model(str(model_path))\n    model_artifact.metadata[\"\
-          framework\"] = \"xgboost\"\n    model_artifact.metadata[\"n_estimators\"\
-          ] = DEFAULT_XGB_PARAMS[\"n_estimators\"]\n    model_artifact.metadata[\"\
-          max_depth\"] = DEFAULT_XGB_PARAMS[\"max_depth\"]\n    model_artifact.metadata[\"\
+          \ complete\")\n\n    y_pred = model.predict(X_test)\n    y_pred_proba =\
+          \ model.predict_proba(X_test)[:, 1]\n    logger.info(\"Positive prediction\
+          \ rate: %.4f\", float(np.mean(y_pred)))\n\n    model_path = Path(model_artifact.path)\n\
+          \    model_path.parent.mkdir(parents=True, exist_ok=True)\n    model.save_model(str(model_path))\n\
+          \    model_artifact.metadata[\"framework\"] = \"xgboost\"\n    model_artifact.metadata[\"\
           feature_names\"] = json.dumps(feature_names)\n    logger.info(\"Model saved\
-          \ to %s\", model_path)\n\n    # ---- Persist test data with predictions\
-          \ ------------------------------\n\n    test_output = test_df.copy()\n \
-          \   test_output[\"y_pred\"] = y_pred\n    test_output[\"y_pred_proba\"]\
-          \ = y_pred_proba\n    test_output.to_csv(test_data_artifact.path, index=False)\n\
-          \    test_data_artifact.metadata[\"test_row_count\"] = len(test_output)\n\
-          \    logger.info(\"Test data with predictions written to %s\", test_data_artifact.path)\n\
-          \n"
+          \ to %s\", model_path)\n\n    test_output = test_df.copy()\n    test_output[\"\
+          y_pred\"] = y_pred\n    test_output[\"y_pred_proba\"] = y_pred_proba\n \
+          \   test_output.to_csv(test_data_artifact.path, index=False)\n    test_data_artifact.metadata[\"\
+          test_row_count\"] = len(test_output)\n    logger.info(\"Test data with predictions\
+          \ written to %s\", test_data_artifact.path)\n\n"
         image: kfp-base:latest
 pipelineInfo:
   description: "End-to-end ML pipeline for predicting GPON router failures within\
-    \ a 7-day horizon.  Stages: ingestion \u2192 training \u2192 evaluation."
+    \ a 7-day horizon. Stages: ingestion \u2192 training \u2192 evaluation \u2192\
+    \ MLflow registration."
   name: gpon-failure-prediction-pipeline
 root:
   dag:
@@ -356,8 +405,7 @@ root:
         taskInfo:
           name: Evaluate Model & Quality Gate
       ingestion-component:
-        cachingOptions:
-          enableCache: true
+        cachingOptions: {}
         componentRef:
           name: comp-ingestion-component
         inputs:
@@ -366,9 +414,32 @@ root:
               componentInputParameter: input_csv_path
         taskInfo:
           name: Ingest & Validate Telemetry
+      registration-component:
+        cachingOptions: {}
+        componentRef:
+          name: comp-registration-component
+        dependentTasks:
+        - evaluation-component
+        - training-component
+        inputs:
+          artifacts:
+            model_artifact:
+              taskOutputArtifact:
+                outputArtifactKey: model_artifact
+                producerTask: training-component
+            test_data_artifact:
+              taskOutputArtifact:
+                outputArtifactKey: test_data_artifact
+                producerTask: training-component
+          parameters:
+            experiment_name:
+              componentInputParameter: experiment_name
+            model_name:
+              componentInputParameter: model_name
+        taskInfo:
+          name: Register Model in MLflow
       training-component:
-        cachingOptions:
-          enableCache: true
+        cachingOptions: {}
         componentRef:
           name: comp-training-component
         dependentTasks:
@@ -388,23 +459,27 @@ root:
     parameters:
       auc_threshold:
         defaultValue: 0.75
-        description: 'Minimum AUC-ROC score the trained model must
-
-          achieve for the evaluation gate to pass.  Defaults to ``0.75``.'
+        description: Minimum AUC-ROC to pass the quality gate.
         isOptional: true
         parameterType: NUMBER_DOUBLE
+      experiment_name:
+        defaultValue: gpon-failure-prediction
+        description: MLflow experiment name.
+        isOptional: true
+        parameterType: STRING
       input_csv_path:
         defaultValue: s3://gpon-telemetry/raw/telemetry.csv
-        description: 'Cloud Storage or local path to the raw telemetry
-
-          CSV file.  Defaults to ``s3://gpon-telemetry/raw/telemetry.csv``.'
+        description: S3/MinIO path to the raw telemetry CSV.
+        isOptional: true
+        parameterType: STRING
+      model_name:
+        defaultValue: gpon-xgboost-classifier
+        description: MLflow Model Registry name.
         isOptional: true
         parameterType: STRING
       test_size:
         defaultValue: 0.2
-        description: 'Fraction of data reserved for the chronological test
-
-          split.  Must be in the open interval (0, 1).  Defaults to ``0.2``.'
+        description: Fraction of data reserved for testing (0-1).
         isOptional: true
         parameterType: NUMBER_DOUBLE
 schemaVersion: 2.1.0
@@ -415,8 +490,142 @@ platforms:
     deploymentSpec:
       executors:
         exec-evaluation-component:
+          configMapAsEnv:
+          - configMapName: mlops-endpoints
+            configMapNameParameter:
+              runtimeValue:
+                constant: mlops-endpoints
+            keyToEnv:
+            - configMapKey: MLFLOW_TRACKING_URI
+              envVar: MLFLOW_TRACKING_URI
+            optional: false
+          - configMapName: mlops-endpoints
+            configMapNameParameter:
+              runtimeValue:
+                constant: mlops-endpoints
+            keyToEnv:
+            - configMapKey: MLFLOW_S3_ENDPOINT_URL
+              envVar: MLFLOW_S3_ENDPOINT_URL
+            optional: false
+          - configMapName: mlops-endpoints
+            configMapNameParameter:
+              runtimeValue:
+                constant: mlops-endpoints
+            keyToEnv:
+            - configMapKey: AWS_ACCESS_KEY_ID
+              envVar: AWS_ACCESS_KEY_ID
+            optional: false
+          - configMapName: mlops-endpoints
+            configMapNameParameter:
+              runtimeValue:
+                constant: mlops-endpoints
+            keyToEnv:
+            - configMapKey: AWS_SECRET_ACCESS_KEY
+              envVar: AWS_SECRET_ACCESS_KEY
+            optional: false
           imagePullPolicy: Never
         exec-ingestion-component:
+          configMapAsEnv:
+          - configMapName: mlops-endpoints
+            configMapNameParameter:
+              runtimeValue:
+                constant: mlops-endpoints
+            keyToEnv:
+            - configMapKey: MLFLOW_TRACKING_URI
+              envVar: MLFLOW_TRACKING_URI
+            optional: false
+          - configMapName: mlops-endpoints
+            configMapNameParameter:
+              runtimeValue:
+                constant: mlops-endpoints
+            keyToEnv:
+            - configMapKey: MLFLOW_S3_ENDPOINT_URL
+              envVar: MLFLOW_S3_ENDPOINT_URL
+            optional: false
+          - configMapName: mlops-endpoints
+            configMapNameParameter:
+              runtimeValue:
+                constant: mlops-endpoints
+            keyToEnv:
+            - configMapKey: AWS_ACCESS_KEY_ID
+              envVar: AWS_ACCESS_KEY_ID
+            optional: false
+          - configMapName: mlops-endpoints
+            configMapNameParameter:
+              runtimeValue:
+                constant: mlops-endpoints
+            keyToEnv:
+            - configMapKey: AWS_SECRET_ACCESS_KEY
+              envVar: AWS_SECRET_ACCESS_KEY
+            optional: false
+          imagePullPolicy: Never
+        exec-registration-component:
+          configMapAsEnv:
+          - configMapName: mlops-endpoints
+            configMapNameParameter:
+              runtimeValue:
+                constant: mlops-endpoints
+            keyToEnv:
+            - configMapKey: MLFLOW_TRACKING_URI
+              envVar: MLFLOW_TRACKING_URI
+            optional: false
+          - configMapName: mlops-endpoints
+            configMapNameParameter:
+              runtimeValue:
+                constant: mlops-endpoints
+            keyToEnv:
+            - configMapKey: MLFLOW_S3_ENDPOINT_URL
+              envVar: MLFLOW_S3_ENDPOINT_URL
+            optional: false
+          - configMapName: mlops-endpoints
+            configMapNameParameter:
+              runtimeValue:
+                constant: mlops-endpoints
+            keyToEnv:
+            - configMapKey: AWS_ACCESS_KEY_ID
+              envVar: AWS_ACCESS_KEY_ID
+            optional: false
+          - configMapName: mlops-endpoints
+            configMapNameParameter:
+              runtimeValue:
+                constant: mlops-endpoints
+            keyToEnv:
+            - configMapKey: AWS_SECRET_ACCESS_KEY
+              envVar: AWS_SECRET_ACCESS_KEY
+            optional: false
           imagePullPolicy: Never
         exec-training-component:
+          configMapAsEnv:
+          - configMapName: mlops-endpoints
+            configMapNameParameter:
+              runtimeValue:
+                constant: mlops-endpoints
+            keyToEnv:
+            - configMapKey: MLFLOW_TRACKING_URI
+              envVar: MLFLOW_TRACKING_URI
+            optional: false
+          - configMapName: mlops-endpoints
+            configMapNameParameter:
+              runtimeValue:
+                constant: mlops-endpoints
+            keyToEnv:
+            - configMapKey: MLFLOW_S3_ENDPOINT_URL
+              envVar: MLFLOW_S3_ENDPOINT_URL
+            optional: false
+          - configMapName: mlops-endpoints
+            configMapNameParameter:
+              runtimeValue:
+                constant: mlops-endpoints
+            keyToEnv:
+            - configMapKey: AWS_ACCESS_KEY_ID
+              envVar: AWS_ACCESS_KEY_ID
+            optional: false
+          - configMapName: mlops-endpoints
+            configMapNameParameter:
+              runtimeValue:
+                constant: mlops-endpoints
+            keyToEnv:
+            - configMapKey: AWS_SECRET_ACCESS_KEY
+              envVar: AWS_SECRET_ACCESS_KEY
+            optional: false
           imagePullPolicy: Never
