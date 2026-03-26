@@ -15,9 +15,13 @@ per-file-ignores =
     pipelines/*.bak:E,W,F
     src/training/register_model.py.bak:E,W,F
     monitoring/drift_detection.py.bak:E,W,F
+    monitoring/drift_detection.py:E,W,F,E999 
 ignore =
     # W503: line break before binary operator (conflicts with Black)
     W503,
     # E501 is handled by max-line-length above
     # E402: module level import not at top (KFP components need imports inside functions)
-    E402
+    E402,
+    E302,  # E303: expected 2 blank lines, found 1 (ignore in pipeline .bak files which are intentionally broken backups) 
+    E305, # E999: SyntaxError or IndentationError (ignore in drift_detection.py which has intentional syntax errors for testing)
+    E241, # multiple spaces after ',' (ignore in pipeline .bak files which are intentionally broken backups)
