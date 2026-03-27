@@ -1,4 +1,4 @@
-"""Data drift detection for GPON router failure-prediction pipeline.
+""""Data drift detection for GPON router failure-prediction pipeline.
 
 This module uses Evidently AI to compare a baseline (training) dataset
 against a current (production) dataset and detect statistically
@@ -37,15 +37,11 @@ from evidently.report import Report
 
 logger = logging.getLogger(__name__)
 
-# Columns that are NOT model features and should be excluded from drift
-# analysis.  Mirrors ``NON_FEATURE_COLUMNS`` in
-# ``src.training.train_xgboost``.
 NON_FEATURE_COLUMNS: List[str] = [
     "Failure_In_7_Days",
     "timestamp",
 ]
 
-# Default paths consistent with the rest of the kubeflowingg project.
 DEFAULT_BASELINE_PATH = Path("data/processed/processed.csv")
 DEFAULT_OUTPUT_PATH = Path("monitoring/reports/drift_report.html")
 
@@ -53,6 +49,7 @@ DEFAULT_OUTPUT_PATH = Path("monitoring/reports/drift_report.html")
 # ------------------------------------------------------------------
 # Data-class for structured results
 # ------------------------------------------------------------------
+
 @dataclass
 class DriftResult:
     """Container for drift detection artefacts.
@@ -75,6 +72,7 @@ class DriftResult:
 # ------------------------------------------------------------------
 # Logging
 # ------------------------------------------------------------------
+
 def configure_logging(level: int = logging.INFO) -> None:
     """Set up structured logging for the drift-detection pipeline.
 
@@ -92,13 +90,13 @@ def configure_logging(level: int = logging.INFO) -> None:
 # ------------------------------------------------------------------
 # Data loading
 # ------------------------------------------------------------------
+
 def load_dataset(path: Path, label: str = "dataset") -> pd.DataFrame:
     """Load a CSV dataset from disk.
 
     Args:
         path: Filesystem path to the CSV file.
-        label: Human-readable label used in log messages
-            (e.g. ``"baseline"`` or ``"current"``).
+        label: Human-readable label used in log messages.
 
     Returns:
         DataFrame loaded from the CSV.
@@ -112,7 +110,7 @@ def load_dataset(path: Path, label: str = "dataset") -> pd.DataFrame:
     logger.info("Loading %s dataset from %s", label, path)
     df = pd.read_csv(path)
     logger.info(
-        "%s dataset: %d rows × %d columns", label.capitalize(), len(df), len(df.columns)
+        "%s dataset: %d rows x %d columns", label.capitalize(), len(df), len(df.columns)
     )
     return df
 
@@ -125,8 +123,7 @@ def select_feature_columns(
 
     Args:
         df: Full DataFrame that may include target / metadata columns.
-        exclude: Column names to drop.  Defaults to
-            :data:`NON_FEATURE_COLUMNS`.
+        exclude: Column names to drop. Defaults to NON_FEATURE_COLUMNS.
 
     Returns:
         DataFrame restricted to feature columns only.
@@ -146,22 +143,19 @@ def select_feature_columns(
 # ------------------------------------------------------------------
 # Drift report
 # ------------------------------------------------------------------
+
 def build_drift_report(
     reference: pd.DataFrame,
     current: pd.DataFrame,
 ) -> Report:
     """Create and execute an Evidently DataDriftPreset report.
 
-    The report compares the statistical distributions of every column
-    in *reference* against *current* using the default per-column
-    drift detection methods (Kolmogorov–Smirnov for numerical features,
-    chi-squared / Jensen–Shannon for categorical ones).
-
     Args:
         reference: Baseline (training) DataFrame.
         current: Production DataFrame to test for drift.
 
     Returns:
+        Executed Evidently Report object.
 
     Raises:
         ValueError: If the two DataFrames have no overlapping columns.
@@ -174,7 +168,8 @@ def build_drift_report(
             f"Current: {list(current.columns)}"
         )
 
-    logger.info(
+    logger.info("Building drift report — %d shared feature columns", len(common_cols))
+
     report = Report(metrics=[DataDriftPreset()])
     report.run(reference_data=reference, current_data=current)
 
@@ -185,7 +180,8 @@ def build_drift_report(
 def save_report(report: Report, output_path: Path) -> Path:
     """Persist the Evidently report as a self-contained HTML file.
 
-    Creates parent directories if they do not already exist.
+    Args:
+        report: An executed Evidently Report.
         output_path: Destination file path for the HTML output.
 
     Returns:
@@ -201,7 +197,10 @@ def extract_drift_summary(report: Report) -> Dict:
     """Convert the Evidently report to a Python dictionary.
 
     Args:
-        report: An executed Evidently ``Report``.
+        report: An executed Evidently Report.
+
+    Returns:
+        Nested dictionary mirroring the JSON structure of the report.
     """
     return report.as_dict()
 
@@ -209,12 +208,8 @@ def extract_drift_summary(report: Report) -> Dict:
 def parse_drifted_columns(summary: Dict) -> List[str]:
     """Extract the list of columns that exhibited statistically significant drift.
 
-    Walks the Evidently report dictionary to find per-column drift
-    results from the ``DataDriftTable`` metric.
-
     Args:
-        summary: Dictionary representation of the drift report
-            (output of :func:`extract_drift_summary`).
+        summary: Dictionary representation of the drift report.
 
     Returns:
         Sorted list of column names where drift was detected.
@@ -240,16 +235,19 @@ def is_dataset_drift_detected(summary: Dict) -> bool:
         summary: Dictionary representation of the drift report.
 
     Returns:
-        ``True`` if the overall dataset drift test fired.
+        True if the overall dataset drift test fired.
     """
     for metric_result in summary.get("metrics", []):
         metric_data = metric_result.get("result", {})
         if "dataset_drift" in metric_data:
             return bool(metric_data["dataset_drift"])
+    return False
+
 
 # ------------------------------------------------------------------
 # Pipeline orchestrator
 # ------------------------------------------------------------------
+
 def run_drift_detection(
     baseline_path: Path = DEFAULT_BASELINE_PATH,
     current_path: Optional[Path] = None,
@@ -261,23 +259,21 @@ def run_drift_detection(
     Steps:
         1. Load baseline and current CSVs.
         2. Restrict to feature columns (optional).
-        3. Build and run the Evidently ``DataDriftPreset`` report.
+        3. Build and run the Evidently DataDriftPreset report.
         4. Save the HTML report.
         5. Parse per-column and dataset-level drift results.
 
     Args:
         baseline_path: Path to the baseline (training) CSV.
-        current_path: Path to the current (production) CSV.
-            **Required** — ``None`` raises :class:`ValueError`.
+        current_path: Path to the current (production) CSV. Required.
         output_path: Destination for the HTML report.
-        feature_only: If ``True``, exclude non-feature columns
-            (target, timestamp) from the analysis.
+        feature_only: If True, exclude non-feature columns from analysis.
 
     Returns:
-        A :class:`DriftResult` dataclass with all artefacts.
+        A DriftResult dataclass with all artefacts.
 
     Raises:
-        ValueError: If *current_path* is not supplied.
+        ValueError: If current_path is not supplied.
     """
     if current_path is None:
         raise ValueError(
@@ -293,10 +289,30 @@ def run_drift_detection(
     # 2 — Feature selection
     if feature_only:
         baseline_df = select_feature_columns(baseline_df)
+        current_df = select_feature_columns(current_df)
+    else:
+        logger.info("Skipping feature selection — all columns included")
+
+    # 3 — Build and run report
+    report = build_drift_report(reference=baseline_df, current=current_df)
+
+    # 4 — Persist HTML report
+    saved_path = save_report(report, output_path)
+
+    # 5 — Parse summary
+    summary = extract_drift_summary(report)
+    drifted_cols = parse_drifted_columns(summary)
+    dataset_drift = is_dataset_drift_detected(summary)
+
+    if dataset_drift:
+        logger.warning(
+            "DATASET-LEVEL DRIFT DETECTED — %d column(s) drifted: %s",
+            len(drifted_cols),
+            drifted_cols,
         )
     else:
         logger.info(
-            "✅ No dataset-level drift detected (%d column(s) drifted: %s)",
+            "No dataset-level drift detected (%d column(s) drifted: %s)",
             len(drifted_cols),
             drifted_cols,
         )
@@ -315,6 +331,7 @@ def run_drift_detection(
 # ------------------------------------------------------------------
 # CLI
 # ------------------------------------------------------------------
+
 def main() -> None:
     """CLI entry-point for drift detection."""
     parser = argparse.ArgumentParser(
@@ -332,11 +349,29 @@ def main() -> None:
         required=True,
         help="Path to the current (production) CSV.",
     )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=DEFAULT_OUTPUT_PATH,
+        help="Destination path for the HTML drift report.",
+    )
+    parser.add_argument(
+        "--include-target",
+        action="store_true",
+        default=False,
+        help="Include the target column in drift analysis.",
+    )
     args = parser.parse_args()
+
+    configure_logging()
+
     result = run_drift_detection(
         baseline_path=args.baseline,
         current_path=args.current,
         output_path=args.output,
+        feature_only=not args.include_target,
+    )
+
     # Exit with non-zero code when drift is detected so CI/CD
     # pipelines can gate on distribution stability.
     if result.drift_detected:
@@ -348,52 +383,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()        feature_only=not args.include_target,
-    )
-
-
-    configure_logging()
-
-    parser.add_argument(
-        help="Include the target column in drift analysis.",
-    )
-        "--output",
-        type=Path,
-        default=False,
-    parser.add_argument(
-        "--include-target",
-        action="store_true",
-        default=DEFAULT_OUTPUT_PATH,
-        help="Destination path for the HTML drift report.",
-    )
-        current_df = select_feature_columns(current_df)
-
-    # 3 — Build & run
-    report = build_drift_report(reference=baseline_df, current=current_df)
-    drifted_cols = parse_drifted_columns(summary)
-            drifted_cols,
-    dataset_drift = is_dataset_drift_detected(summary)
-            "⚠️  DATASET-LEVEL DRIFT DETECTED — %d column(s) drifted: %s",
-            len(drifted_cols),
-
-    if dataset_drift:
-        logger.warning(
-
-    # 5 — Parse summary
-    summary = extract_drift_summary(report)
-
-    # 4 — Persist
-    saved_path = save_report(report, output_path)
-
-    return False
-
-
-    Returns:
-        Nested dictionary mirroring the JSON structure of the report.
-
-    Args:
-        report: An executed Evidently ``Report``.
-        "Building drift report — %d shared feature columns", len(common_cols)
-    )
-
-
+    main()

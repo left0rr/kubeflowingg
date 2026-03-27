@@ -12,6 +12,8 @@ services:
       - '--storage.tsdb.path=/prometheus'
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - mlops-network  
     restart: unless-stopped
   postgres:
     image: postgres:15-alpine
