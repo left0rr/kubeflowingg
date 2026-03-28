@@ -46,9 +46,9 @@ spec:
           - -c
           - |
             mkdir -p /mnt/models/gpon-failure-predictor &&
-            aws --endpoint-url http://172.19.0.2:9000 s3 cp \
+            aws --endpoint-url http://MINIO_KIND_IP:9000 s3 cp \
               s3://mlflow-artifacts/1/68eda4f72c51419a88b3b2f5a098c61d/artifacts/model/model.xgb \
-              /mnt/models/gpon-failure-predictor/model.bst &&
+              /mnt/models/gpon-failure-predictor/model.xgb &&
             echo "Model downloaded successfully" &&
             tail -f /dev/null
         env:
