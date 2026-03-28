@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from pathlib import Path
 from datetime import datetime, timedelta
 from scipy.special import expit
 import gc
@@ -145,9 +146,11 @@ df["RX_Power_24h_Std"] = df.groupby("Device_ID")["Optical_RX_Power_dBm"].transfo
 # 12 hours is now exactly 4 rows (4 * 3H = 12H)
 df["Temp_Trend_Slope_12h"] = df.groupby("Device_ID")["Temperature_C"].transform(lambda x: x.diff(4)).fillna(0).round(2)
 
-filename = "synthetic_gpon_hardened_3h_interval.csv"
-df.to_csv(filename, index=False)
+output_path = Path("data/raw/telemetry.csv")
+output_path.parent.mkdir(parents=True, exist_ok=True)
+df.to_csv(output_path, index=False)
 print(f"Hardened Dataset Complete! Shape: {df.shape}")
+print(f"Saved dataset to {output_path}")
 
 numeric_df = df.select_dtypes(include=['float64', 'int64'])
 corr = numeric_df.corr()['Failure_In_7_Days'].sort_values(ascending=False)
