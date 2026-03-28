@@ -8,19 +8,31 @@ A machine learning model predicts imminent failure so operations teams can proac
 
 ---
 
-# Project Goals
+## Project Status
 
-* Build a **realistic telecom predictive maintenance system**
-* Demonstrate **modern MLOps architecture**
-* Implement **automated model retraining**
-* Provide **monitoring and drift detection**
-* Deploy a **scalable inference service**
-
-The platform runs locally using a lightweight Kubernetes environment.
+| Phase | Component | Status |
+|-------|-----------|--------|
+| Data | Ingestion + Pydantic validation | ✅ Done |
+| Data | Feature engineering | ✅ Done |
+| Training | XGBoost classifier | ✅ Done |
+| Training | MLflow experiment tracking + registry | ✅ Done |
+| Orchestration | Kubeflow Pipelines (4-stage) | ✅ Done |
+| Deployment | KServe RawDeployment on KIND | ✅ Done |
+| Monitoring | Prometheus metrics exporter | ✅ Done |
+| Monitoring | Traffic simulator → KServe | ✅ Done |
+| Monitoring | Evidently drift detection | 🔄 In Progress |
+| Monitoring | Grafana dashboards | 📋 Planned |
+| Retraining | Drift-triggered retraining pipeline | 📋 Planned |
+| Retraining | Model promotion policy | 📋 Planned |
+| Security | FastAPI inference gateway | 📋 Planned |
+| Security | OPA / Kyverno policy enforcement | 📋 Planned |
+| Security | SPIFFE / SPIRE workload identity | 📋 Future |
+| Features | Feast feature store | 📋 Future |
+| Quality | Great Expectations data contracts | 📋 Future |
 
 ---
 
-# System Architecture
+## System Architecture
 
 ```
                          GitHub Repository
@@ -37,8 +49,8 @@ The platform runs locally using a lightweight Kubernetes environment.
                  ┌─────────────────────────┐
                  │   Kubeflow Pipelines    │
                  │                         │
-                 │  Ingest → Train → Eval  │
-                 │                         │
+                 │  Ingest → Train →       │
+                 │  Evaluate → Register    │
                  └──────────┬──────────────┘
                             │
                             ▼
@@ -67,7 +79,7 @@ The platform runs locally using a lightweight Kubernetes environment.
 
 ---
 
-# MLOps Lifecycle
+## MLOps Lifecycle
 
 ```
 Data → Feature Engineering → Training → Evaluation
@@ -79,86 +91,104 @@ This **closed loop** ensures the system remains accurate as network conditions c
 
 ---
 
-# Technology Stack
+## Technology Stack
 
-## Infrastructure
+### Infrastructure
 
-* Docker
-* KIND Kubernetes cluster
-* Docker Compose
+| Tool | Purpose |
+|------|---------|
+| Docker | Containerisation |
+| KIND | Local Kubernetes cluster |
+| Docker Compose | MLflow + MinIO + PostgreSQL + Prometheus |
 
-## MLOps Platform
+### MLOps Platform
 
-* Kubeflow Pipelines
-* MLflow
-* MinIO
-* KServe
+| Tool | Purpose |
+|------|---------|
+| Kubeflow Pipelines v2 | Pipeline orchestration (4 stages) |
+| MLflow 2.12 | Experiment tracking + model registry |
+| MinIO | S3-compatible artifact store |
+| KServe v0.14 | Model inference serving (RawDeployment) |
 
-## Machine Learning
+### Machine Learning
 
-* XGBoost
-* Scikit-learn
-* Pandas
-* NumPy
+| Tool | Purpose |
+|------|---------|
+| XGBoost 2.0 | Binary failure classifier |
+| Scikit-learn | Evaluation metrics |
+| Pandas | Data processing |
+| Evidently AI | Data + prediction drift detection |
 
-## Monitoring
+### Monitoring
 
-* Evidently AI
-* Prometheus
-* Grafana
+| Tool | Purpose |
+|------|---------|
+| Prometheus | Metrics collection (scrapes port 8000) |
+| Grafana | Dashboards (planned) |
+| prometheus_client | Python metrics exporter |
 
-## Backend / APIs
+### Backend / APIs
 
-* FastAPI
-* Uvicorn
-* Pydantic
+| Tool | Purpose |
+|------|---------|
+| FastAPI | Inference gateway (planned) |
+| Pydantic | Input validation schema |
 
-## DevOps
+### DevOps
 
-* GitHub Actions
-* Makefile automation
+| Tool | Purpose |
+|------|---------|
+| GitHub Actions | CI/CD (lint + test) |
+| flake8 | Linting |
+| pytest | Testing |
+| Makefile | Automation |
 
 ---
 
-# Repository Structure
+## Repository Structure
 
 ```
 repo-root/
 │
 ├── src/
 │   ├── data/
-│   │   ├── ingest.py
-│   │   ├── validation.py
-│   │   └── feature_engineering.py
+│   │   ├── ingest.py               # Data loading + Pydantic validation
+│   │   ├── validation.py           # TelemetryRecord schema
+│   │   └── feature_engineering.py # Voltage normalisation + rolling features
 │   │
 │   └── training/
-│       ├── train_xgboost.py
-│       ├── evaluate.py
-│       └── register_model.py
+│       ├── train_xgboost.py        # Chronological split + XGBoost training
+│       ├── evaluate.py             # AUC, F1, precision, recall
+│       └── register_model.py       # MLflow experiment + model registration
 │
 ├── pipelines/
-│   ├── pipeline_components.py
-│   ├── kubeflow_pipeline.py
-│   └── retraining_pipeline.py
+│   ├── pipeline_components.py      # KFP v2 components (ingest/train/eval/register)
+│   ├── kubeflow_pipeline.py        # Pipeline definition + ConfigMap injection
+│   └── pipeline.yaml              # Compiled pipeline (auto-generated)
 │
 ├── deployment/
 │   └── kserve/
-│       └── inference_service.yaml
+│       └── inference_service.yaml  # KServe InferenceService (RawDeployment)
 │
 ├── monitoring/
-│   ├── drift_detection.py
-│   ├── metrics_exporter.py
-│   └── retraining_trigger.py
-│
-├── infrastructure/
-│   └── docker-compose.yml
+│   ├── drift_detection.py          # Evidently DataDriftPreset report
+│   ├── metrics_exporter.py         # Prometheus gauge (prediction_failure_ratio)
+│   ├── retraining_trigger.py       # Drift threshold → KFP trigger (planned)
+│   └── prometheus.yml              # Prometheus scrape config
 │
 ├── scripts/
-│   └── scheduler.py
+│   ├── generate_data.py            # Synthetic GPON telemetry generator
+│   └── scheduler.py               # Periodic drift check scheduler (planned)
+│
+├── infrastructure/
+│   └── docker-compose.yml          # MLflow + MinIO + PostgreSQL + Prometheus
 │
 ├── .github/workflows/
-│   └── ci-cd.yml
+│   └── ci-cd.yml                  # Lint + test on push to main
 │
+├── Dockerfile.kfp-base             # KFP component base image (all deps baked in)
+├── start_mlops.sh                  # Session startup script (IPs + ConfigMap)
+├── simulate_trafic.py              # Traffic simulator → KServe + CSV logging
 ├── requirements.txt
 ├── Makefile
 └── README.md
@@ -166,318 +196,311 @@ repo-root/
 
 ---
 
-# Dataset Description
+## Dataset Description
 
-The dataset contains simulated **GPON router telemetry metrics**.
+Simulated **GPON router telemetry** at 3-hour intervals across 500 devices over 30 days.
 
-## Features
+### Features
 
-| Feature                    | Description                      |
-| -------------------------- | -------------------------------- |
-| Optical_RX_Power_dBm       | Received optical signal strength |
-| Optical_TX_Power_dBm       | Transmitted optical power        |
-| Temperature_C              | Device temperature               |
-| Voltage_mV                 | Device voltage                   |
-| Bias_Current_mA            | Laser diode bias current         |
-| Interface_Error_Count      | Network interface errors         |
-| Reboot_Count_Last_7D       | Reboots in last week             |
-| Connected_Devices          | Number of clients connected      |
-| Device_Age_Days            | Router age                       |
-| Maintenance_Count_Last_30D | Maintenance operations           |
+| Feature | Description | Range |
+|---------|-------------|-------|
+| Optical_RX_Power_dBm | Received optical signal strength | -40 to 0 dBm |
+| Optical_TX_Power_dBm | Transmitted optical power | -10 to 10 dBm |
+| Temperature_C | Device temperature | -40 to 125 °C |
+| Voltage_V | Device voltage (normalised from mV) | 0 to 5 V |
+| Bias_Current_mA | Laser diode bias current | 0 to 200 mA |
+| Interface_Error_Count | Cumulative interface errors | ≥ 0 |
+| Reboot_Count_Last_7D | Reboots in last week | ≥ 0 |
+| Connected_Devices | Number of connected clients | ≥ 0 |
+| Device_Age_Days | Router age since deployment | ≥ 0 |
+| Maintenance_Count_Last_30D | Maintenance operations | ≥ 0 |
 
-## Target
-
-```
-Failure_In_7_Days
-```
-
-Binary classification:
+### Target
 
 ```
-1 = router failure predicted
-0 = normal operation
+Failure_In_7_Days  →  1 = failure predicted,  0 = normal operation
 ```
+
+Class distribution: ~15% positive (failure), ~85% negative.
 
 ---
 
-# Machine Learning Model
+## Model Performance
 
-The primary model is:
+Evaluated on a chronological 20% test split (24,000 rows):
 
-```
-XGBoost Gradient Boosted Trees
-```
-
-Why XGBoost:
-
-* Robust to tabular data
-* Handles nonlinear relationships
-* High performance for structured telemetry
-* Widely used in industry
-
-Evaluation metrics include:
-
-* AUC
-* Precision
-* Recall
-* F1-Score
+| Metric | Value |
+|--------|-------|
+| AUC-ROC | 0.9980 |
+| Precision | 0.9048 |
+| Recall | 0.8487 |
+| F1 Score | 0.8759 |
+| Positive rate | 3.7% |
 
 ---
 
-# Data Processing Pipeline
+## Kubeflow Pipeline
 
-1. Load dataset
-2. Validate schema with Pydantic
-3. Feature engineering
-4. Normalize voltage
-5. Compute rolling optical power statistics
-6. Save processed dataset
+Four sequential stages compiled to `pipelines/pipeline.yaml`:
+
+```
+Ingest & Validate Telemetry
+        ↓
+Train XGBoost Classifier
+        ↓
+Evaluate Model & Quality Gate  (AUC ≥ 0.75 required)
+        ↓
+Register Model in MLflow
+```
+
+All environment variables (MLflow URI, MinIO endpoint, credentials) are
+injected from a Kubernetes ConfigMap `mlops-endpoints` — no hardcoded IPs.
 
 ---
 
-# Training Pipeline
+## Deployment
 
-The Kubeflow pipeline performs:
+The trained model is served via **KServe v0.14 in RawDeployment mode** (no Istio/Knative required).
 
-```
-Data Ingestion
-     ↓
-Feature Engineering
-     ↓
-Train XGBoost Model
-     ↓
-Evaluate Model
-     ↓
-Log Experiments
-     ↓
-Register Model
-```
+Key design decisions for local KIND setup:
 
-Artifacts and metrics are stored in MLflow.
+- `protocolVersion` and `runtimeVersion` removed — causes MLServer routing if present
+- Sidecar `model-downloader` container (aws-cli) fetches `model.bst` from MinIO
+  into a shared `emptyDir` volume instead of relying on KServe storage initializer
+- `imagePullPolicy: Never` on all containers — images pre-loaded into KIND via `docker save`
+- Namespace-scoped `ServingRuntime` overrides cluster-scoped one for pull policy control
 
----
-
-# Model Deployment
-
-The trained model is deployed using **KServe**.
-
-Inference endpoint example:
+### Inference endpoint
 
 ```
-POST /v1/models/router-failure:predict
+POST /v1/models/gpon-failure-predictor:predict
 ```
 
-Example request:
+Example request (feature order must match training):
 
 ```json
 {
-  "Optical_RX_Power_dBm": -19.2,
-  "Temperature_C": 70,
-  "Voltage_V": 3.3,
-  "Reboot_Count_Last_7D": 3
+  "instances": [[
+    -18.5,   // Optical_RX_Power_dBm
+    2.3,     // Optical_TX_Power_dBm
+    42.1,    // Temperature_C
+    35.2,    // Bias_Current_mA
+    12,      // Interface_Error_Count
+    1,       // Reboot_Count_Last_7D
+    4,       // Connected_Devices
+    730,     // Device_Age_Days
+    0,       // Maintenance_Count_Last_30D
+    3.3      // Voltage_V
+  ]]
 }
 ```
 
 Example response:
 
 ```json
-{
-  "failure_probability": 0.82
-}
+{"predictions": [0.0007]}
 ```
 
 ---
 
-# Monitoring and Observability
+## Monitoring
 
-Monitoring is handled by three systems.
+### Prometheus metrics
 
-## Evidently
+`metrics_exporter.py` exposes `prediction_failure_ratio` as a Prometheus Gauge on `:8000/metrics`.
+Prometheus scrapes it every 10 seconds via `host.docker.internal:8000`.
 
-Detects:
+### Traffic simulation
 
-* data drift
-* feature drift
-* distribution shifts
+`simulate_trafic.py` continuously sends synthetic telemetry to KServe,
+saves the full feature vector + prediction score to `data/predictions/latest.csv`.
+This file is used both by `metrics_exporter.py` and `drift_detection.py`.
 
-Generates HTML drift reports.
+### Drift detection
+
+`drift_detection.py` uses Evidently AI `DataDriftPreset` to compare
+`data/processed/processed.csv` (baseline) against `data/predictions/latest.csv` (production).
+
+```bash
+python -m monitoring.drift_detection \
+    --baseline data/processed/processed.csv \
+    --current  data/predictions/latest.csv \
+    --output   monitoring/reports/drift_report.html
+```
+
+Exits with code 1 when dataset-level drift is detected — designed to gate CI/CD pipelines.
+
+### Grafana (planned)
+
+Will be added to `docker-compose.yml` as a service connected to Prometheus.
+Planned dashboards:
+
+- `prediction_failure_ratio` over time
+- Prediction throughput (requests/min)
+- Drift alert status per feature
+- Model AUC trend across retraining runs
 
 ---
 
-## Prometheus
-
-Collects metrics:
-
-* inference latency
-* prediction counts
-* failure prediction ratio
-
----
-
-## Grafana
-
-Provides dashboards showing:
-
-* prediction trends
-* system performance
-* model metrics
-
----
-
-# Automated Retraining
-
-When drift is detected:
-
-1. Monitoring job runs drift analysis
-2. If drift exceeds threshold
-3. Kubeflow retraining pipeline is triggered
-4. New model is trained
-5. Model performance is evaluated
-6. Model is promoted only if performance improves
-
-Example policy:
+## Automated Retraining (planned)
 
 ```
-if new_auc > production_auc:
-    promote_model
-```
-
----
-
-# CI/CD Pipeline
-
-Continuous integration runs on every push.
-
-Steps:
-
-```
-Install dependencies
-Run linting
-Run tests
-Build containers
-```
-
-This ensures code quality before deployment.
-
----
-
-# Local Setup Guide
-
-## 1 Install Dependencies
-
-```
-make install
+Drift detected by drift_detection.py
+        ↓
+retraining_trigger.py fires KFP pipeline run via KFP SDK
+        ↓
+Full 4-stage pipeline reruns on latest data
+        ↓
+New model evaluated — AUC compared to production model
+        ↓
+If new_auc > production_auc → promote to "Production" stage in MLflow
+        ↓
+KServe InferenceService updated to point at new model artifact
 ```
 
 ---
 
-## 2 Start Infrastructure
+## Planned Security Additions
 
-```
-docker-compose up -d
-```
+### FastAPI Inference Gateway (next)
 
-This launches:
+A lightweight FastAPI service will sit in front of KServe adding:
 
-* MLflow
-* PostgreSQL
-* MinIO
+- API key authentication via `X-API-Key` header
+- Request rate limiting
+- Input schema validation (Pydantic `TelemetryRecord`)
+- Request/response logging for audit trail
+- Single stable endpoint regardless of KServe pod IP changes
 
----
+### OPA / Kyverno — Kubernetes Policy Enforcement
 
-## 3 Start Kubernetes Cluster
+Enforce cluster-wide policies:
 
-```
-kind create cluster
-```
+- All pods must declare resource limits
+- Only images from approved registries (`kserve/`, `kfp-base`)
+- No privileged containers in `kserve` namespace
+- ConfigMaps containing credentials must be namespaced
 
----
+### SPIFFE / SPIRE — Workload Identity (future)
 
-## 4 Deploy Kubeflow Pipelines
-
-Apply pipeline configuration.
-
----
-
-## 5 Run Training Pipeline
-
-Compile and upload pipeline:
-
-```
-python pipelines/kubeflow_pipeline.py
-```
+Cryptographic workload identity for pod-to-pod and pod-to-service authentication.
+Each pod receives an X.509 SVID (SPIFFE Verifiable Identity Document).
+Eliminates the need for static credentials in ConfigMaps for inter-service communication.
 
 ---
 
-## 6 Deploy Model
+## Planned Feature Store — Feast (future)
 
-Apply KServe service:
+Centralise feature definitions to eliminate the current duplication between:
 
-```
-kubectl apply -f deployment/kserve/inference_service.yaml
-```
+- `src/data/feature_engineering.py` (local training)
+- `pipelines/pipeline_components.py` ingestion component (KFP)
+- `simulate_trafic.py` (inference time)
+
+With Feast, a single `FeatureView` definition drives all three paths,
+guaranteeing training/serving feature parity.
 
 ---
 
-# Example Workflow
+## Local Setup Guide
 
-```
-Router Telemetry
-        │
-        ▼
-Dataset Stored in MinIO
-        │
-        ▼
-Kubeflow Training Pipeline
-        │
-        ▼
-MLflow Model Registry
-        │
-        ▼
-KServe Deployment
-        │
-        ▼
-Predictions for Router Failure
-        │
-        ▼
-Monitoring + Drift Detection
-        │
-        ▼
-Automatic Retraining
+### 1. Every session — start infrastructure
+
+```bash
+./start_mlops.sh
 ```
 
+This starts Docker Compose services, connects them to the KIND network,
+updates the Kubernetes ConfigMap with current IPs, and reloads the kfp-base image.
+
+### 2. First time only — generate and process data
+
+```bash
+mkdir -p data/raw data/processed
+python scripts/generate_data.py
+python -m src.data.ingest --input data/raw/telemetry.csv
+```
+
+### 3. Train and register model locally
+
+```bash
+export MLFLOW_S3_ENDPOINT_URL=http://localhost:9000
+export AWS_ACCESS_KEY_ID=minio
+export AWS_SECRET_ACCESS_KEY=minio123
+
+python -m src.training.register_model \
+  --input data/processed/processed.csv \
+  --tracking-uri http://localhost:5000
+```
+
+### 4. Run the Kubeflow pipeline
+
+```bash
+# Compile
+python -m pipelines.kubeflow_pipeline
+
+# Upload pipeline.yaml to KFP UI at http://localhost:8080
+# Create a run with input_csv_path = s3://gpon-telemetry/raw/telemetry.csv
+```
+
+### 5. Port-forward KServe for inference
+
+```bash
+kubectl port-forward -n kserve \
+  svc/gpon-failure-predictor-predictor 8085:80 &
+```
+
+### 6. Run traffic simulator
+
+```bash
+python simulate_trafic.py
+```
+
+### 7. Run metrics exporter
+
+```bash
+python -m monitoring.metrics_exporter \
+  --predictions data/predictions/latest.csv \
+  --port 8000 \
+  --interval 30
+```
+
+### 8. Run drift detection
+
+```bash
+python -m monitoring.drift_detection \
+    --baseline data/processed/processed.csv \
+    --current  data/predictions/latest.csv \
+    --output   monitoring/reports/drift_report.html
+```
+
 ---
 
-# Key MLOps Concepts Demonstrated
+## CI/CD Pipeline
 
-* End-to-End ML lifecycle
-* Experiment tracking
-* Model versioning
-* Data drift monitoring
-* Automated retraining
-* Containerized infrastructure
-* Kubernetes ML deployment
+Runs on every push to `main`:
+
+```
+Install dependencies → flake8 lint → pytest
+```
 
 ---
 
-# Future Improvements
+## Known Issues and Design Notes
 
-Possible extensions:
-
-* Feature Store integration
-* Canary model deployment
-* Online learning
-* Real telemetry ingestion via Kafka
-* Distributed hyperparameter tuning
+- MinIO IP on KIND network changes after laptop restart — `start_mlops.sh` handles this automatically
+- KServe storage initializer not injected in RawDeployment with custom ServingRuntime — workaround uses aws-cli sidecar
+- `kind load docker-image` fails for multi-platform OCI images — use `docker save` + `ctr import` instead
+- `protocolVersion: v2` in InferenceService routes to MLServer (Seldon) not native xgbserver — always omit it
 
 ---
 
-# Author
+## Author
 
-MLOps internship project focused on **telecom network reliability prediction**.
+MLOps internship project — telecom network reliability prediction using GPON telemetry.
 
 ---
 
-# License
+## License
 
 MIT License
