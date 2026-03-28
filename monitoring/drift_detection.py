@@ -1,27 +1,17 @@
-""""Data drift detection for GPON router failure-prediction pipeline.
+"""Data drift detection for GPON router failure-prediction pipeline.
 
-This module uses Evidently AI to compare a baseline (training) dataset
-against a current (production) dataset and detect statistically
-significant distribution shifts across all telemetry features.
-
-The pipeline:
-    1. Load the baseline training CSV produced by ``src.data.ingest``.
-    2. Load the current production CSV collected from live ONT devices.
-    3. Optionally restrict analysis to model feature columns only
-       (excluding the target ``Failure_In_7_Days`` and ``timestamp``).
-    4. Run the ``DataDriftPreset`` report from Evidently.
-    5. Persist the HTML report to disk for review.
+This module compares a baseline training dataset against a recent window
+of production-style predictions. The current dataset can be sliced by
+row count or by timestamp so the drift signal reflects fresh behavior
+instead of the full lifetime of the CSV log.
 
 Usage::
 
     python -m monitoring.drift_detection \
         --baseline data/processed/processed.csv \
-        --current  data/production/latest.csv \
-        --output   monitoring/reports/drift_report.html
-
-Requirements:
-    evidently==0.4.16
-    pandas==2.2.2
+        --current data/predictions/latest.csv \
+        --output monitoring/reports/drift_report.html \
+        --current-window-rows 500
 """
 
 import argparse
@@ -37,30 +27,27 @@ from evidently.report import Report
 
 logger = logging.getLogger(__name__)
 
+TIMESTAMP_COLUMN = "timestamp"
 NON_FEATURE_COLUMNS: List[str] = [
     "Failure_In_7_Days",
-    "timestamp",
+    "predicted_failure_label",
+    TIMESTAMP_COLUMN,
+    "prediction_score",
+    "true_status",
+    "source_mode",
+    "drift_profile",
+    "drift_applied",
 ]
 
 DEFAULT_BASELINE_PATH = Path("data/processed/processed.csv")
 DEFAULT_OUTPUT_PATH = Path("monitoring/reports/drift_report.html")
+DEFAULT_CURRENT_WINDOW_ROWS = 500
+DEFAULT_MIN_CURRENT_ROWS = 100
 
-
-# ------------------------------------------------------------------
-# Data-class for structured results
-# ------------------------------------------------------------------
 
 @dataclass
 class DriftResult:
-    """Container for drift detection artefacts.
-
-    Attributes:
-        report: The Evidently ``Report`` object (already executed).
-        report_path: Filesystem path where the HTML report was saved.
-        drift_detected: ``True`` when the dataset-level drift test fires.
-        drifted_columns: List of column names that individually drifted.
-        drift_summary: Full dictionary representation of the report.
-    """
+    """Container for drift detection artefacts."""
 
     report: Report
     report_path: Path
@@ -69,16 +56,8 @@ class DriftResult:
     drift_summary: Dict
 
 
-# ------------------------------------------------------------------
-# Logging
-# ------------------------------------------------------------------
-
 def configure_logging(level: int = logging.INFO) -> None:
-    """Set up structured logging for the drift-detection pipeline.
-
-    Args:
-        level: Python logging level.  Defaults to ``logging.INFO``.
-    """
+    """Set up structured logging for the drift-detection pipeline."""
     logging.basicConfig(
         level=level,
         format="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
@@ -87,51 +66,78 @@ def configure_logging(level: int = logging.INFO) -> None:
     )
 
 
-# ------------------------------------------------------------------
-# Data loading
-# ------------------------------------------------------------------
-
 def load_dataset(path: Path, label: str = "dataset") -> pd.DataFrame:
-    """Load a CSV dataset from disk.
-
-    Args:
-        path: Filesystem path to the CSV file.
-        label: Human-readable label used in log messages.
-
-    Returns:
-        DataFrame loaded from the CSV.
-
-    Raises:
-        FileNotFoundError: If *path* does not exist.
-    """
+    """Load a CSV dataset from disk."""
     if not path.exists():
         raise FileNotFoundError(f"{label} file not found: {path}")
 
     logger.info("Loading %s dataset from %s", label, path)
     df = pd.read_csv(path)
     logger.info(
-        "%s dataset: %d rows x %d columns", label.capitalize(), len(df), len(df.columns)
+        "%s dataset: %d rows x %d columns",
+        label.capitalize(),
+        len(df),
+        len(df.columns),
     )
     return df
+
+
+def select_recent_rows(
+    df: pd.DataFrame,
+    label: str,
+    window_rows: Optional[int] = DEFAULT_CURRENT_WINDOW_ROWS,
+    window_minutes: Optional[int] = None,
+) -> pd.DataFrame:
+    """Restrict a dataset to a recent monitoring window."""
+    if df.empty:
+        return df
+
+    if window_minutes is not None and TIMESTAMP_COLUMN in df.columns:
+        timestamped_df = df.copy()
+        timestamped_df[TIMESTAMP_COLUMN] = pd.to_datetime(
+            timestamped_df[TIMESTAMP_COLUMN],
+            errors="coerce",
+        )
+        timestamped_df = timestamped_df.dropna(subset=[TIMESTAMP_COLUMN])
+
+        if not timestamped_df.empty:
+            latest_ts = timestamped_df[TIMESTAMP_COLUMN].max()
+            cutoff_ts = latest_ts - pd.Timedelta(minutes=window_minutes)
+            recent_df = timestamped_df[
+                timestamped_df[TIMESTAMP_COLUMN] >= cutoff_ts
+            ].reset_index(drop=True)
+            logger.info(
+                "Using %d %s row(s) from the last %d minute(s)",
+                len(recent_df),
+                label,
+                window_minutes,
+            )
+            return recent_df
+
+        logger.warning(
+            "Could not parse '%s' in %s dataset; falling back to row window",
+            TIMESTAMP_COLUMN,
+            label,
+        )
+
+    if window_rows is not None and window_rows > 0 and len(df) > window_rows:
+        recent_df = df.tail(window_rows).reset_index(drop=True)
+        logger.info("Using the last %d %s row(s)", len(recent_df), label)
+        return recent_df
+
+    logger.info("Using all %d available %s row(s)", len(df), label)
+    return df.reset_index(drop=True)
 
 
 def select_feature_columns(
     df: pd.DataFrame,
     exclude: Optional[List[str]] = None,
 ) -> pd.DataFrame:
-    """Drop non-feature columns so drift analysis covers model inputs only.
-
-    Args:
-        df: Full DataFrame that may include target / metadata columns.
-        exclude: Column names to drop. Defaults to NON_FEATURE_COLUMNS.
-
-    Returns:
-        DataFrame restricted to feature columns only.
-    """
+    """Drop metadata columns so drift analysis covers model inputs only."""
     if exclude is None:
         exclude = NON_FEATURE_COLUMNS
 
-    cols_to_drop = [c for c in exclude if c in df.columns]
+    cols_to_drop = [column for column in exclude if column in df.columns]
     if cols_to_drop:
         logger.info("Excluding non-feature columns: %s", cols_to_drop)
         df = df.drop(columns=cols_to_drop)
@@ -140,27 +146,12 @@ def select_feature_columns(
     return df
 
 
-# ------------------------------------------------------------------
-# Drift report
-# ------------------------------------------------------------------
-
 def build_drift_report(
     reference: pd.DataFrame,
     current: pd.DataFrame,
 ) -> Report:
-    """Create and execute an Evidently DataDriftPreset report.
-
-    Args:
-        reference: Baseline (training) DataFrame.
-        current: Production DataFrame to test for drift.
-
-    Returns:
-        Executed Evidently Report object.
-
-    Raises:
-        ValueError: If the two DataFrames have no overlapping columns.
-    """
-    common_cols = set(reference.columns) & set(current.columns)
+    """Create and execute an Evidently DataDriftPreset report."""
+    common_cols = sorted(set(reference.columns) & set(current.columns))
     if not common_cols:
         raise ValueError(
             "No overlapping columns between reference and current datasets. "
@@ -168,7 +159,9 @@ def build_drift_report(
             f"Current: {list(current.columns)}"
         )
 
-    logger.info("Building drift report — %d shared feature columns", len(common_cols))
+    reference = reference[common_cols].copy()
+    current = current[common_cols].copy()
+    logger.info("Building drift report with %d shared feature columns", len(common_cols))
 
     report = Report(metrics=[DataDriftPreset()])
     report.run(reference_data=reference, current_data=current)
@@ -178,15 +171,7 @@ def build_drift_report(
 
 
 def save_report(report: Report, output_path: Path) -> Path:
-    """Persist the Evidently report as a self-contained HTML file.
-
-    Args:
-        report: An executed Evidently Report.
-        output_path: Destination file path for the HTML output.
-
-    Returns:
-        The resolved output path.
-    """
+    """Persist the Evidently report as a self-contained HTML file."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     report.save_html(str(output_path))
     logger.info("Drift report saved to %s", output_path)
@@ -194,26 +179,12 @@ def save_report(report: Report, output_path: Path) -> Path:
 
 
 def extract_drift_summary(report: Report) -> Dict:
-    """Convert the Evidently report to a Python dictionary.
-
-    Args:
-        report: An executed Evidently Report.
-
-    Returns:
-        Nested dictionary mirroring the JSON structure of the report.
-    """
+    """Convert the Evidently report to a Python dictionary."""
     return report.as_dict()
 
 
 def parse_drifted_columns(summary: Dict) -> List[str]:
-    """Extract the list of columns that exhibited statistically significant drift.
-
-    Args:
-        summary: Dictionary representation of the drift report.
-
-    Returns:
-        Sorted list of column names where drift was detected.
-    """
+    """Extract the list of columns that exhibited statistically significant drift."""
     drifted: List[str] = []
 
     for metric_result in summary.get("metrics", []):
@@ -229,14 +200,7 @@ def parse_drifted_columns(summary: Dict) -> List[str]:
 
 
 def is_dataset_drift_detected(summary: Dict) -> bool:
-    """Check whether dataset-level drift was flagged.
-
-    Args:
-        summary: Dictionary representation of the drift report.
-
-    Returns:
-        True if the overall dataset drift test fired.
-    """
+    """Check whether dataset-level drift was flagged."""
     for metric_result in summary.get("metrics", []):
         metric_data = metric_result.get("result", {})
         if "dataset_drift" in metric_data:
@@ -244,81 +208,63 @@ def is_dataset_drift_detected(summary: Dict) -> bool:
     return False
 
 
-# ------------------------------------------------------------------
-# Pipeline orchestrator
-# ------------------------------------------------------------------
-
 def run_drift_detection(
     baseline_path: Path = DEFAULT_BASELINE_PATH,
     current_path: Optional[Path] = None,
     output_path: Path = DEFAULT_OUTPUT_PATH,
     feature_only: bool = True,
+    current_window_rows: Optional[int] = DEFAULT_CURRENT_WINDOW_ROWS,
+    current_window_minutes: Optional[int] = None,
+    min_current_rows: int = DEFAULT_MIN_CURRENT_ROWS,
 ) -> DriftResult:
-    """Execute the full drift-detection pipeline.
-
-    Steps:
-        1. Load baseline and current CSVs.
-        2. Restrict to feature columns (optional).
-        3. Build and run the Evidently DataDriftPreset report.
-        4. Save the HTML report.
-        5. Parse per-column and dataset-level drift results.
-
-    Args:
-        baseline_path: Path to the baseline (training) CSV.
-        current_path: Path to the current (production) CSV. Required.
-        output_path: Destination for the HTML report.
-        feature_only: If True, exclude non-feature columns from analysis.
-
-    Returns:
-        A DriftResult dataclass with all artefacts.
-
-    Raises:
-        ValueError: If current_path is not supplied.
-    """
+    """Execute the full drift-detection pipeline."""
     if current_path is None:
-        raise ValueError(
-            "current_path is required. Pass the path to the production CSV."
-        )
+        raise ValueError("current_path is required. Pass the production CSV path.")
 
     logger.info("=== Data Drift Detection Pipeline START ===")
 
-    # 1 — Load data
     baseline_df = load_dataset(baseline_path, label="baseline")
     current_df = load_dataset(current_path, label="current")
+    current_df = select_recent_rows(
+        current_df,
+        label="current",
+        window_rows=current_window_rows,
+        window_minutes=current_window_minutes,
+    )
 
-    # 2 — Feature selection
+    if min_current_rows > 0 and len(current_df) < min_current_rows:
+        raise ValueError(
+            "Not enough current rows for a reliable drift decision: "
+            f"{len(current_df)} < {min_current_rows}"
+        )
+
     if feature_only:
         baseline_df = select_feature_columns(baseline_df)
         current_df = select_feature_columns(current_df)
     else:
-        logger.info("Skipping feature selection — all columns included")
+        logger.info("Skipping feature selection; all columns included")
 
-    # 3 — Build and run report
     report = build_drift_report(reference=baseline_df, current=current_df)
-
-    # 4 — Persist HTML report
     saved_path = save_report(report, output_path)
 
-    # 5 — Parse summary
     summary = extract_drift_summary(report)
     drifted_cols = parse_drifted_columns(summary)
     dataset_drift = is_dataset_drift_detected(summary)
 
     if dataset_drift:
         logger.warning(
-            "DATASET-LEVEL DRIFT DETECTED — %d column(s) drifted: %s",
+            "Dataset-level drift detected in %d column(s): %s",
             len(drifted_cols),
             drifted_cols,
         )
     else:
         logger.info(
-            "No dataset-level drift detected (%d column(s) drifted: %s)",
+            "No dataset-level drift detected (%d drifted column(s): %s)",
             len(drifted_cols),
             drifted_cols,
         )
 
     logger.info("=== Data Drift Detection Pipeline COMPLETE ===")
-
     return DriftResult(
         report=report,
         report_path=saved_path,
@@ -328,14 +274,10 @@ def run_drift_detection(
     )
 
 
-# ------------------------------------------------------------------
-# CLI
-# ------------------------------------------------------------------
-
 def main() -> None:
     """CLI entry-point for drift detection."""
     parser = argparse.ArgumentParser(
-        description="Detect data drift between baseline and production GPON telemetry.",
+        description="Detect data drift between baseline and recent production GPON telemetry.",
     )
     parser.add_argument(
         "--baseline",
@@ -359,24 +301,42 @@ def main() -> None:
         "--include-target",
         action="store_true",
         default=False,
-        help="Include the target column in drift analysis.",
+        help="Include target and metadata columns in drift analysis.",
+    )
+    parser.add_argument(
+        "--current-window-rows",
+        type=int,
+        default=DEFAULT_CURRENT_WINDOW_ROWS,
+        help="Use only the most recent N current rows for drift detection.",
+    )
+    parser.add_argument(
+        "--current-window-minutes",
+        type=int,
+        default=None,
+        help="Use only current rows from the last N minutes when timestamps are present.",
+    )
+    parser.add_argument(
+        "--min-current-rows",
+        type=int,
+        default=DEFAULT_MIN_CURRENT_ROWS,
+        help="Minimum number of current rows required before making a drift decision.",
     )
     args = parser.parse_args()
 
     configure_logging()
-
     result = run_drift_detection(
         baseline_path=args.baseline,
         current_path=args.current,
         output_path=args.output,
         feature_only=not args.include_target,
+        current_window_rows=args.current_window_rows,
+        current_window_minutes=args.current_window_minutes,
+        min_current_rows=args.min_current_rows,
     )
 
-    # Exit with non-zero code when drift is detected so CI/CD
-    # pipelines can gate on distribution stability.
     if result.drift_detected:
         logger.warning(
-            "Exiting with code 1 — drift detected in %d column(s)",
+            "Exiting with code 1 because drift was detected in %d column(s)",
             len(result.drifted_columns),
         )
         sys.exit(1)

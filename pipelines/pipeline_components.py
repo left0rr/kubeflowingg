@@ -277,8 +277,12 @@ def evaluation_component(
         logger.info("PASSED: AUC-ROC %.4f >= threshold %.4f", auc_roc, auc_threshold)
     else:
         logger.warning("FAILED: AUC-ROC %.4f < threshold %.4f", auc_roc, auc_threshold)
+        raise RuntimeError(
+            "Quality gate failed: "
+            f"auc_roc={auc_roc:.4f} < threshold={auc_threshold:.4f}"
+        )
 
-    return passed
+    return True
 
 
 # ---------------------------------------------------------------------------

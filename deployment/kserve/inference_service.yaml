@@ -46,16 +46,27 @@ spec:
           - -c
           - |
             mkdir -p /mnt/models/gpon-failure-predictor &&
-            aws --endpoint-url http://172.19.0.2:9000 s3 cp \
-              s3://mlflow-artifacts/1/68eda4f72c51419a88b3b2f5a098c61d/artifacts/model/model.xgb \
+            aws --endpoint-url "${MINIO_ENDPOINT_URL}" s3 cp \
+              s3://deployment-models/gpon-failure-predictor/champion/model.bst \
               /mnt/models/gpon-failure-predictor/model.bst &&
             echo "Model downloaded successfully" &&
             tail -f /dev/null
         env:
+          - name: MINIO_ENDPOINT_URL
+            valueFrom:
+              configMapKeyRef:
+                name: mlops-endpoints
+                key: MINIO_ENDPOINT_URL
           - name: AWS_ACCESS_KEY_ID
-            value: "minio"
+            valueFrom:
+              configMapKeyRef:
+                name: mlops-endpoints
+                key: AWS_ACCESS_KEY_ID
           - name: AWS_SECRET_ACCESS_KEY
-            value: "minio123"
+            valueFrom:
+              configMapKeyRef:
+                name: mlops-endpoints
+                key: AWS_SECRET_ACCESS_KEY
           - name: AWS_DEFAULT_REGION
             value: "us-east-1"
         volumeMounts:
@@ -64,19 +75,3 @@ spec:
     volumes:
       - name: model-dir
         emptyDir: {}
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: minio-credentials
-  namespace: kserve
-type: Opaque
-stringData:
-  accesskey: "minio"
-  secretkey: "minio123"
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: kserve-minio-sa
-  namespace: kserve
