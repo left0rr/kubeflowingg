@@ -66,7 +66,8 @@ services:
       /bin/sh -c "
       mc alias set minio http://minio:9000 minio minio123 &&
       mc mb --ignore-existing minio/mlflow-artifacts &&
-      mc mb --ignore-existing minio/deployment-models
+      mc mb --ignore-existing minio/deployment-models &&
+      mc mb --ignore-existing minio/gpon-telemetry
       "
     networks:
       - mlops-network
