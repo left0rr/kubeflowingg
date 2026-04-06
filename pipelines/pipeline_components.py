@@ -281,7 +281,6 @@ def evaluation_component(
             "Quality gate failed: "
             f"auc_roc={auc_roc:.4f} < threshold={auc_threshold:.4f}"
         )
-
     return True
 
 
