@@ -79,7 +79,7 @@ def gpon_failure_prediction_pipeline(
     _inject_env(eval_task)
 
     # Step 4 — MLflow Registration
-    with dsl.If(eval_task.output == True, name="register-if-quality-gate-passed"):
+    with dsl.If(eval_task.outputs["Output"] == True, name="register-if-quality-gate-passed"):
         register_task = registration_component(
             model_artifact=train_task.outputs["model_artifact"],
             test_data_artifact=train_task.outputs["test_data_artifact"],

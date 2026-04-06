@@ -8,6 +8,43 @@
 #    model_name: str [Default: 'gpon-xgboost-classifier']
 #    test_size: float [Default: 0.2]
 components:
+  comp-condition-1:
+    dag:
+      tasks:
+        registration-component:
+          cachingOptions: {}
+          componentRef:
+            name: comp-registration-component
+          inputs:
+            artifacts:
+              model_artifact:
+                componentInputArtifact: pipelinechannel--training-component-model_artifact
+              test_data_artifact:
+                componentInputArtifact: pipelinechannel--training-component-test_data_artifact
+            parameters:
+              experiment_name:
+                componentInputParameter: pipelinechannel--experiment_name
+              model_name:
+                componentInputParameter: pipelinechannel--model_name
+          taskInfo:
+            name: Register Model in MLflow
+    inputDefinitions:
+      artifacts:
+        pipelinechannel--training-component-model_artifact:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+        pipelinechannel--training-component-test_data_artifact:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+      parameters:
+        pipelinechannel--evaluation-component-Output:
+          parameterType: BOOLEAN
+        pipelinechannel--experiment_name:
+          parameterType: STRING
+        pipelinechannel--model_name:
+          parameterType: STRING
   comp-evaluation-component:
     executorLabel: exec-evaluation-component
     inputDefinitions:
@@ -136,7 +173,9 @@ deploymentSpec:
           passed_gate\", float(passed))\n\n    if passed:\n        logger.info(\"\
           PASSED: AUC-ROC %.4f >= threshold %.4f\", auc_roc, auc_threshold)\n    else:\n\
           \        logger.warning(\"FAILED: AUC-ROC %.4f < threshold %.4f\", auc_roc,\
-          \ auc_threshold)\n\n    return passed\n\n"
+          \ auc_threshold)\n        raise RuntimeError(\n            \"Quality gate\
+          \ failed: \"\n            f\"auc_roc={auc_roc:.4f} < threshold={auc_threshold:.4f}\"\
+          \n        )\n    return True\n\n"
         image: kfp-base:latest
     exec-ingestion-component:
       container:
@@ -386,6 +425,36 @@ pipelineInfo:
 root:
   dag:
     tasks:
+      condition-1:
+        componentRef:
+          name: comp-condition-1
+        dependentTasks:
+        - evaluation-component
+        - training-component
+        inputs:
+          artifacts:
+            pipelinechannel--training-component-model_artifact:
+              taskOutputArtifact:
+                outputArtifactKey: model_artifact
+                producerTask: training-component
+            pipelinechannel--training-component-test_data_artifact:
+              taskOutputArtifact:
+                outputArtifactKey: test_data_artifact
+                producerTask: training-component
+          parameters:
+            pipelinechannel--evaluation-component-Output:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: evaluation-component
+            pipelinechannel--experiment_name:
+              componentInputParameter: experiment_name
+            pipelinechannel--model_name:
+              componentInputParameter: model_name
+        taskInfo:
+          name: register-if-quality-gate-passed
+        triggerPolicy:
+          condition: inputs.parameter_values['pipelinechannel--evaluation-component-Output']
+            == true
       evaluation-component:
         cachingOptions: {}
         componentRef:
@@ -413,30 +482,6 @@ root:
               componentInputParameter: input_csv_path
         taskInfo:
           name: Ingest & Validate Telemetry
-      registration-component:
-        cachingOptions: {}
-        componentRef:
-          name: comp-registration-component
-        dependentTasks:
-        - evaluation-component
-        - training-component
-        inputs:
-          artifacts:
-            model_artifact:
-              taskOutputArtifact:
-                outputArtifactKey: model_artifact
-                producerTask: training-component
-            test_data_artifact:
-              taskOutputArtifact:
-                outputArtifactKey: test_data_artifact
-                producerTask: training-component
-          parameters:
-            experiment_name:
-              componentInputParameter: experiment_name
-            model_name:
-              componentInputParameter: model_name
-        taskInfo:
-          name: Register Model in MLflow
       training-component:
         cachingOptions: {}
         componentRef:
