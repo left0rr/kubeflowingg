@@ -24,6 +24,7 @@ echo "=== Updating Kubernetes ConfigMap ==="
 kubectl create configmap mlops-endpoints \
   --from-literal=MLFLOW_TRACKING_URI=http://${MLFLOW_IP}:5000 \
   --from-literal=MLFLOW_S3_ENDPOINT_URL=http://${MINIO_IP}:9000 \
+  --from-literal=MINIO_ENDPOINT_URL=http://${MINIO_IP}:9000 \
   --from-literal=AWS_ACCESS_KEY_ID=minio \
   --from-literal=AWS_SECRET_ACCESS_KEY=minio123 \
   -n kubeflow \
