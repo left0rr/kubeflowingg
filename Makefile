@@ -19,4 +19,4 @@ format:
 	black src/
 
 deploy-champion:
-	python src/monitoring/promote_champion.py	
+	python monitoring/promote_champion.py	
