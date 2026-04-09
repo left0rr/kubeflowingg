@@ -19,20 +19,23 @@ services:
     image: grafana/grafana:latest
     container_name: grafana
     restart: unless-stopped
+    cpus: 0.50
+    mem_limit: 256m
     ports:
       - "3000:3000"
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin123
       GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
     volumes:
       - grafana_data:/var/lib/grafana
       - ../monitoring/grafana/provisioning:/etc/grafana/provisioning
       - ../monitoring/grafana/dashboards:/var/lib/grafana/dashboards
     networks:
       - mlops-network
-    depends_on:
-      - prometheus  
   postgres:
     image: postgres:15-alpine
     container_name: mlflow-postgres
