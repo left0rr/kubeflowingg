@@ -1,0 +1,28 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-pod-resources-kserve
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-container-resources-in-kserve
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - kserve
+      validate:
+        message: "All containers in the kserve namespace must declare CPU and memory requests and limits."
+        foreach:
+          - list: "request.object.spec.containers"
+            pattern:
+              resources:
+                requests:
+                  cpu: "?*"
+                  memory: "?*"
+                limits:
+                  cpu: "?*"
+                  memory: "?*"

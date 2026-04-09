@@ -1,0 +1,26 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-privileged-kserve
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: disallow-privileged-containers-in-kserve
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - kserve
+      validate:
+        message: "Privileged containers are not allowed in the kserve namespace."
+        foreach:
+          - list: "request.object.spec.containers"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element.securityContext.privileged || false }}"
+                    operator: Equals
+                    value: true
