@@ -20,10 +20,10 @@ A machine learning model predicts imminent failure so operations teams can proac
 | Deployment | KServe RawDeployment on KIND | ✅ Done |
 | Monitoring | Prometheus metrics exporter | ✅ Done |
 | Monitoring | Traffic simulator → KServe | ✅ Done |
-| Monitoring | Evidently drift detection | 🔄 In Progress |
-| Monitoring | Grafana dashboards | 📋 Planned |
-| Retraining | Drift-triggered retraining pipeline | 📋 Planned |
-| Retraining | Model promotion policy | 📋 Planned |
+| Monitoring | Evidently drift detection | ✅ Done |
+| Monitoring | Grafana dashboards | ✅ Done |
+| Retraining | Drift-triggered retraining trigger foundation | 🔄 In Progress |
+| Retraining | Champion promotion helper | ✅ Done |
 | Security | FastAPI inference gateway | 📋 Planned |
 | Security | OPA / Kyverno policy enforcement | 📋 Planned |
 | Security | SPIFFE / SPIRE workload identity | 📋 Future |
@@ -67,14 +67,16 @@ A machine learning model predicts imminent failure so operations teams can proac
                             │
                             ▼
                       Monitoring Stack
-            Evidently + Prometheus + Grafana
+      Evidently + Prometheus + Grafana + Node Exporter
                             │
                             ▼
                      Drift Detection
                             │
                             ▼
-                     Automated Retraining
-                     (Kubeflow Pipeline)
+                 Retraining Trigger Decision
+                            │
+                            ▼
+               Optional Kubeflow Retraining Run
 ```
 
 ---
@@ -124,7 +126,8 @@ This **closed loop** ensures the system remains accurate as network conditions c
 | Tool | Purpose |
 |------|---------|
 | Prometheus | Metrics collection (scrapes port 8000) |
-| Grafana | Dashboards (planned) |
+| Grafana | Dashboards for predictions, drift, and system health |
+| Node Exporter | Host CPU, memory, and filesystem metrics |
 | prometheus_client | Python metrics exporter |
 
 ### Backend / APIs
@@ -173,8 +176,12 @@ repo-root/
 ├── monitoring/
 │   ├── drift_detection.py          # Evidently DataDriftPreset report
 │   ├── metrics_exporter.py         # Prometheus gauge (prediction_failure_ratio)
-│   ├── retraining_trigger.py       # Drift threshold → KFP trigger (planned)
+│   ├── retraining_trigger.py       # Drift threshold → KFP retraining trigger
 │   └── prometheus.yml              # Prometheus scrape config
+│
+├── retraining/
+│   ├── README.md                   # Retraining foundations and workflow docs
+│   └── retraining_config.example.yaml
 │
 ├── scripts/
 │   ├── generate_data.py            # Synthetic GPON telemetry generator
@@ -330,39 +337,64 @@ python -m monitoring.drift_detection \
 
 Exits with code 1 when dataset-level drift is detected — designed to gate CI/CD pipelines.
 
-### Grafana (planned)
+### Grafana dashboards
 
-Will be added to `docker-compose.yml` as a service connected to Prometheus.
-Planned dashboards:
+Grafana is provisioned from `monitoring/grafana/` and reads from Prometheus.
+The current dashboard covers:
 
 - `prediction_failure_ratio` over time
-- Prediction throughput (requests/min)
-- Drift alert status per feature
-- Model AUC trend across retraining runs
+- current sample window size
+- drift alert status and drifted feature count
+- host CPU, memory, and root filesystem usage
+- exporter health and drift-check freshness
 
 ---
 
-## Automated Retraining (planned)
+## Automated Retraining Foundation
 
 ```
-Drift detected by drift_detection.py
+drift_detection.py writes HTML report + Prometheus metrics
         ↓
-retraining_trigger.py fires KFP pipeline run via KFP SDK
+retraining_trigger.py reads drift metrics
         ↓
-Full 4-stage pipeline reruns on latest data
+trigger rules are evaluated in dry-run mode by default
         ↓
-New model evaluated — AUC compared to production model
+if rules pass and --submit is enabled:
         ↓
-If new_auc > production_auc → promote to "Production" stage in MLflow
+Kubeflow pipeline run is submitted through the KFP SDK
         ↓
-KServe InferenceService updated to point at new model artifact
+quality gate still decides whether the candidate can move forward
+        ↓
+promote_champion.py can be used after successful validation
+```
+
+This is intentionally a foundation, not a fully hands-off closed loop yet.
+
+The current retraining trigger adds:
+
+- transparent drift thresholds
+- cooldown protection to avoid repeated submissions
+- dry-run mode for safe tuning
+- Prometheus textfile metrics for future Grafana panels
+
+Starter commands:
+
+```bash
+python -m monitoring.retraining_trigger \
+  --config retraining/retraining_config.example.yaml
+```
+
+```bash
+python -m monitoring.retraining_trigger \
+  --config retraining/retraining_config.example.yaml \
+  --submit
 ```
 
 ---
 
 ## Planned Security Additions
 
-### FastAPI Inference Gateway (next)
+### FastAPI Inference Gateway
 
 A lightweight FastAPI service will sit in front of KServe adding:
 
@@ -472,6 +504,21 @@ python -m monitoring.drift_detection \
     --baseline data/processed/processed.csv \
     --current  data/predictions/latest.csv \
     --output   monitoring/reports/drift_report.html
+```
+
+### 9. Evaluate retraining trigger in dry-run mode
+
+```bash
+python -m monitoring.retraining_trigger \
+  --config retraining/retraining_config.example.yaml
+```
+
+### 10. Submit a retraining run when ready
+
+```bash
+python -m monitoring.retraining_trigger \
+  --config retraining/retraining_config.example.yaml \
+  --submit
 ```
 
 ---

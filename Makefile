@@ -1,4 +1,4 @@
-.PHONY: install test lint docker-up docker-down grafana-up grafana-down format deploy-champion
+.PHONY: install test lint docker-up docker-down grafana-up grafana-down retraining-check retraining-submit format deploy-champion
 
 install:
 	pip install -r requirements.txt
@@ -20,6 +20,12 @@ grafana-up:
 
 grafana-down:
 	docker compose -f infrastructure/docker-compose.yml stop grafana
+
+retraining-check:
+	python -m monitoring.retraining_trigger --config retraining/retraining_config.example.yaml
+
+retraining-submit:
+	python -m monitoring.retraining_trigger --config retraining/retraining_config.example.yaml --submit
 
 format:
 	black src/
