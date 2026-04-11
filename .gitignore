@@ -6,3 +6,5 @@ data/raw/
 .data/raw/
 monitoring/reports/
 .monitoring/reports/
+monitoring/prometheus_textfile/*.prom
+!monitoring/prometheus_textfile/.gitkeep
