@@ -21,15 +21,25 @@ echo "MLflow IP : $MLFLOW_IP"
 echo "MinIO  IP : $MINIO_IP"
 
 echo "=== Updating Kubernetes ConfigMap ==="
-kubectl create configmap mlops-endpoints \
-  --from-literal=MLFLOW_TRACKING_URI=http://${MLFLOW_IP}:5000 \
-  --from-literal=MLFLOW_S3_ENDPOINT_URL=http://${MINIO_IP}:9000 \
-  --from-literal=MINIO_ENDPOINT_URL=http://${MINIO_IP}:9000 \
-  --from-literal=AWS_ACCESS_KEY_ID=minio \
-  --from-literal=AWS_SECRET_ACCESS_KEY=minio123 \
-  -n kubeflow \
-  --dry-run=client -o yaml | kubectl apply -f -
 
+apply_configmap() {
+  local NS=$1
+  if kubectl get namespace "$NS" &>/dev/null; then
+    kubectl create configmap mlops-endpoints \
+      --from-literal=MLFLOW_TRACKING_URI=http://${MLFLOW_IP}:5000 \
+      --from-literal=MLFLOW_S3_ENDPOINT_URL=http://${MINIO_IP}:9000 \
+      --from-literal=MINIO_ENDPOINT_URL=http://${MINIO_IP}:9000 \
+      --from-literal=AWS_ACCESS_KEY_ID=minio \
+      --from-literal=AWS_SECRET_ACCESS_KEY=minio123 \
+      -n "$NS" --dry-run=client -o yaml | kubectl apply -f -
+    echo "ConfigMap applied → namespace: $NS"
+  else
+    echo "Namespace $NS not found — skipping"
+  fi
+}
+
+apply_configmap kubeflow
+apply_configmap kserve
 echo "=== Reloading kfp-base image into KIND ==="
 if docker image inspect kfp-base:latest > /dev/null 2>&1; then
   kind load docker-image kfp-base:latest --name mlops-cluster
