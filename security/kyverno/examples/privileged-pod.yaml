@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: privileged-test-pod
+  namespace: kserve
+spec:
+  restartPolicy: Never
+  containers:
+    - name: privileged-container
+      image: busybox:1.36
+      command:
+        - sh
+        - -c
+        - sleep 3600
+      securityContext:
+        privileged: true
+      resources:
+        requests:
+          cpu: "25m"
+          memory: "32Mi"
+        limits:
+          cpu: "100m"
+          memory: "64Mi"
