@@ -24,7 +24,7 @@ A machine learning model predicts imminent failure so operations teams can proac
 | Monitoring | Grafana dashboards | ✅ Done |
 | Retraining | Drift-triggered retraining trigger foundation | 🔄 In Progress |
 | Retraining | Champion promotion helper | ✅ Done |
-| Security | FastAPI inference gateway | 📋 Planned |
+| Security | FastAPI inference gateway foundation | 🔄 In Progress |
 | Security | OPA / Kyverno policy enforcement | 📋 Planned |
 | Security | SPIFFE / SPIRE workload identity | 📋 Future |
 | Features | Feast feature store | 📋 Future |
@@ -60,6 +60,10 @@ A machine learning model predicts imminent failure so operations teams can proac
                             ▼
                           MinIO
                (Datasets + Model Artifacts)
+                            │
+                            ▼
+                         FastAPI
+             (Auth + Guardrails + Audit Logs)
                             │
                             ▼
                          KServe
@@ -154,6 +158,9 @@ This **closed loop** ensures the system remains accurate as network conditions c
 repo-root/
 │
 ├── src/
+│   ├── api/
+│   │   └── inference_gateway.py   # FastAPI gateway in front of KServe
+│   │
 │   ├── data/
 │   │   ├── ingest.py               # Data loading + Pydantic validation
 │   │   ├── validation.py           # TelemetryRecord schema
@@ -182,6 +189,10 @@ repo-root/
 ├── retraining/
 │   ├── README.md                   # Retraining foundations and workflow docs
 │   └── retraining_config.example.yaml
+│
+├── security/
+│   └── fastapi/
+│       └── README.md               # Gateway architecture and local run guide
 │
 ├── scripts/
 │   ├── generate_data.py            # Synthetic GPON telemetry generator
@@ -268,6 +279,9 @@ injected from a Kubernetes ConfigMap `mlops-endpoints` — no hardcoded IPs.
 ## Deployment
 
 The trained model is served via **KServe v0.14 in RawDeployment mode** (no Istio/Knative required).
+For operator-facing traffic, a FastAPI gateway now sits in front of KServe so
+we can preserve router metadata, apply auth, and centralise logging without
+polluting the model feature vector.
 
 Key design decisions for local KIND setup:
 
@@ -319,9 +333,17 @@ Prometheus scrapes it every 10 seconds via `host.docker.internal:8000`.
 
 ### Traffic simulation
 
-`simulate_trafic.py` continuously sends synthetic telemetry to KServe,
-saves the full feature vector + prediction score to `data/predictions/latest.csv`.
-This file is used both by `metrics_exporter.py` and `drift_detection.py`.
+`simulate_trafic.py` now targets the FastAPI gateway by default and sends:
+
+- router metadata (`device_id`, serial number, Tunisian telecom number)
+- model features
+- simulation context (`source_mode`, drift profile, drift status)
+
+The FastAPI gateway forwards only the feature vector to KServe, then writes:
+
+- `data/predictions/latest.csv` for metrics exporter + drift detection
+- `data/predictions/prediction_events.csv` for alerting/audit workflows
+- `data/feedback/labeled_feedback.csv` when simulated ground-truth labels are available
 
 ### Drift detection
 
@@ -396,13 +418,14 @@ python -m monitoring.retraining_trigger \
 
 ### FastAPI Inference Gateway
 
-A lightweight FastAPI service will sit in front of KServe adding:
+A lightweight FastAPI service sits in front of KServe adding:
 
 - API key authentication via `X-API-Key` header
 - Request rate limiting
-- Input schema validation (Pydantic `TelemetryRecord`)
-- Request/response logging for audit trail
+- Input schema validation for router metadata + model features
+- Request logging for audit trail and future alerting
 - Single stable endpoint regardless of KServe pod IP changes
+- Preservation of router identity fields outside the model feature vector
 
 ### OPA / Kyverno — Kubernetes Policy Enforcement
 
@@ -482,13 +505,23 @@ kubectl port-forward -n kserve \
   svc/gpon-failure-predictor-predictor 8085:80 &
 ```
 
-### 6. Run traffic simulator
+### 6. Start the FastAPI gateway
 
 ```bash
-python simulate_trafic.py
+export FASTAPI_GATEWAY_API_KEY=gpon-dev-key
+uvicorn src.api.inference_gateway:app --host 0.0.0.0 --port 8010
 ```
 
-### 7. Run metrics exporter
+### 7. Run traffic simulator
+
+```bash
+python simulate_trafic.py \
+  --target fastapi \
+  --gateway-url http://localhost:8010/predict \
+  --api-key gpon-dev-key
+```
+
+### 8. Run metrics exporter
 
 ```bash
 python -m monitoring.metrics_exporter \
@@ -497,7 +530,7 @@ python -m monitoring.metrics_exporter \
   --interval 30
 ```
 
-### 8. Run drift detection
+### 9. Run drift detection
 
 ```bash
 python -m monitoring.drift_detection \
@@ -506,14 +539,14 @@ python -m monitoring.drift_detection \
     --output   monitoring/reports/drift_report.html
 ```
 
-### 9. Evaluate retraining trigger in dry-run mode
+### 10. Evaluate retraining trigger in dry-run mode
 
 ```bash
 python -m monitoring.retraining_trigger \
   --config retraining/retraining_config.example.yaml
 ```
 
-### 10. Submit a retraining run when ready
+### 11. Submit a retraining run when ready
 
 ```bash
 python -m monitoring.retraining_trigger \

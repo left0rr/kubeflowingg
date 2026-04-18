@@ -1,4 +1,4 @@
-.PHONY: install test lint docker-up docker-down grafana-up grafana-down retraining-check retraining-submit format deploy-champion
+.PHONY: install test lint docker-up docker-down grafana-up grafana-down gateway-run retraining-check retraining-submit format deploy-champion
 
 install:
 	pip install -r requirements.txt
@@ -20,6 +20,9 @@ grafana-up:
 
 grafana-down:
 	docker compose -f infrastructure/docker-compose.yml stop grafana
+
+gateway-run:
+	uvicorn src.api.inference_gateway:app --host 0.0.0.0 --port 8010
 
 retraining-check:
 	python -m monitoring.retraining_trigger --config retraining/retraining_config.example.yaml
