@@ -1,0 +1,17 @@
+drift_metrics_path: monitoring/prometheus_textfile/drift_detection.prom
+trigger_metrics_path: monitoring/prometheus_textfile/retraining_trigger.prom
+
+pipeline:
+  host: http://localhost:8080
+  package_path: pipelines/pipeline.yaml
+  experiment_name: gpon-retraining
+  run_name_prefix: gpon-retrain
+  input_csv_path: s3://gpon-telemetry/raw/telemetry.csv
+  test_size: 0.2
+  auc_threshold: 0.75
+
+thresholds:
+  require_dataset_drift: true
+  min_drifted_columns: 3
+  min_drifted_fraction: 0.30
+  cooldown_minutes: 120
