@@ -40,16 +40,12 @@ apply_configmap() {
 
 apply_configmap kubeflow
 apply_configmap kserve
+echo "=== Rebuilding kfp-base image from current src/ code ==="
+docker build -f Dockerfile.kfp-base -t kfp-base:latest .
+
 echo "=== Reloading kfp-base image into KIND ==="
-if docker image inspect kfp-base:latest > /dev/null 2>&1; then
-  kind load docker-image kfp-base:latest --name mlops-cluster
-  echo "kfp-base:latest loaded into KIND"
-else
-  echo "kfp-base:latest not found locally — building it now..."
-  docker build -f Dockerfile.kfp-base -t kfp-base:latest .
-  kind load docker-image kfp-base:latest --name mlops-cluster
-  echo "kfp-base:latest built and loaded into KIND"
-fi
+kind load docker-image kfp-base:latest --name mlops-cluster
+echo "kfp-base:latest built and loaded into KIND"
 
 echo ""
 echo "=== Done! ==="

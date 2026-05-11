@@ -3,7 +3,12 @@
 from pathlib import Path
 
 from kfp import compiler, dsl
-from kfp import kubernetes
+try :
+    from kfp import kubernetes
+except ImportError as exc:
+    raise ImportError(
+        "kfp-kubernetes is required for Kubernetes-specific pipeline features. "
+    ) from exc   
 
 from pipelines.pipeline_components import (
     evaluation_component,

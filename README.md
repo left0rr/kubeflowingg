@@ -162,7 +162,7 @@ repo-root/
 │       └── register_model.py       # MLflow experiment + model registration
 │
 ├── pipelines/
-│   ├── pipeline_components.py      # KFP v2 components (ingest/train/eval/register)
+│   ├── pipeline_components.py      # Thin KFP wrappers around shared src/ logic
 │   ├── kubeflow_pipeline.py        # Pipeline definition + ConfigMap injection
 │   └── pipeline.yaml              # Compiled pipeline (auto-generated)
 │
@@ -186,7 +186,7 @@ repo-root/
 ├── .github/workflows/
 │   └── ci-cd.yml                  # Lint + test on push to main
 │
-├── Dockerfile.kfp-base             # KFP component base image (all deps baked in)
+├── Dockerfile.kfp-base             # KFP component image (deps + shared src/ code)
 ├── start_mlops.sh                  # Session startup script (IPs + ConfigMap)
 ├── simulate_trafic.py              # Traffic simulator → KServe + CSV logging
 ├── requirements.txt
@@ -255,6 +255,12 @@ Register Model in MLflow
 
 All environment variables (MLflow URI, MinIO endpoint, credentials) are
 injected from a Kubernetes ConfigMap `mlops-endpoints` — no hardcoded IPs.
+
+The recommended pattern is:
+
+- business logic lives in `src/`
+- `pipeline_components.py` wraps that shared logic for KFP artifacts/runtime
+- local CLI runs and Kubeflow runs stay aligned because they reuse the same code
 
 ---
 
@@ -411,7 +417,8 @@ guaranteeing training/serving feature parity.
 ```
 
 This starts Docker Compose services, connects them to the KIND network,
-updates the Kubernetes ConfigMap with current IPs, and reloads the kfp-base image.
+updates the Kubernetes ConfigMap with current IPs, rebuilds `kfp-base` from the
+current `src/` code, and reloads that image into KIND.
 
 ### 2. First time only — generate and process data
 
