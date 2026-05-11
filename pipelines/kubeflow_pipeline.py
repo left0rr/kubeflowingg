@@ -1,6 +1,5 @@
 """Kubeflow Pipelines v2 pipeline definition for GPON failure prediction."""
 
-from ast import Try
 from pathlib import Path
 
 from kfp import compiler, dsl
