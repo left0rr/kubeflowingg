@@ -6,11 +6,11 @@
 # Target VM:  4 vCPU · 16 GB RAM · 60 GB SSD
 #
 # What this script does (in order):
-#   Phase 1  — System prerequisites  (Docker, kubectl, KIND, pip)
+#   Phase 1  — System prerequisites  (Docker, kubectl, KIND, repo venv)
 #   Phase 2  — Swap space            (4 GB swap guard-rail)
 #   Phase 3  — KIND cluster          (uses kind-config.yaml)
-#   Phase 4  — Kubeflow Pipelines    (backend 2.3.0)
-#   Phase 5  — KServe + cert-manager (v0.14 / RawDeployment)
+#   Phase 4  — Kubeflow Pipelines    (backend 2.15.0)
+#   Phase 5  — ingress-nginx + KServe + cert-manager
 #   Phase 6  — Kyverno               (Audit-mode starter policies)
 #   Phase 7  — Docker Compose stack  (MLflow, MinIO, Prometheus, Grafana)
 #   Phase 8  — Network bridging      (compose ↔ KIND) + ConfigMaps
@@ -58,13 +58,24 @@ SKIP_IMAGES="${SKIP_IMAGES:-false}"
 SKIP_DATA="${SKIP_DATA:-false}"
 SKIP_DEPLOY="${SKIP_DEPLOY:-false}"
 
-KIND_VERSION="v0.23.0"
-KFP_VERSION="2.3.0"
+KIND_VERSION="v0.31.0"
+KFP_VERSION="2.15.0"
 KSERVE_VERSION="v0.14.0"
-CERTMANAGER_VERSION="v1.15.0"
+CERTMANAGER_VERSION="v1.14.4"
 KYVERNO_VERSION="v1.16.2"
+VENV_DIR="$REPO_DIR/venv"
+PYTHON_BIN="$VENV_DIR/bin/python"
+PIP_BIN="$VENV_DIR/bin/pip"
 
 cmd_exists() { command -v "$1" &>/dev/null; }
+
+ensure_repo_venv() {
+    if [ ! -x "$PYTHON_BIN" ]; then
+        info "Creating repo virtual environment at $VENV_DIR…"
+        python3 -m venv "$VENV_DIR"
+    fi
+    export PATH="$VENV_DIR/bin:$PATH"
+}
 
 wait_for_pods() {
     local ns="$1"; local label="$2"; local timeout="${3:-300}"
@@ -86,10 +97,11 @@ phase_prereqs() {
     step "Phase 1 — System Prerequisites"
 
     sudo apt-get update -qq
+    sudo apt-get install -y git ca-certificates curl gnupg lsb-release \
+        python3-venv python3-pip python3-dev build-essential -qq
 
     if ! cmd_exists docker; then
         info "Installing Docker Engine…"
-        sudo apt-get install -y ca-certificates curl gnupg lsb-release
         sudo install -m 0755 -d /etc/apt/keyrings
         curl -fsSL "https://download.docker.com/linux/$(. /etc/os-release && echo "$ID")/gpg" \
             | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
@@ -143,10 +155,11 @@ phase_prereqs() {
         log "Helm already installed."
     fi
 
-    info "Installing Python requirements…"
-    sudo apt-get install -y python3-pip python3-dev build-essential -qq
-    pip3 install --quiet -r "$REPO_DIR/requirements.txt"
-    log "Python requirements installed."
+    info "Preparing repo virtual environment…"
+    ensure_repo_venv
+    "$PYTHON_BIN" -m pip install --quiet --upgrade pip
+    make install
+    log "Repo virtual environment is ready."
 }
 
 phase_swap() {
@@ -199,17 +212,23 @@ phase_kfp() {
         return
     fi
 
+    local tmp_dir
+    tmp_dir="$(mktemp -d)"
+
+    info "Cloning kubeflow/pipelines ${KFP_VERSION}…"
+    git clone --depth 1 --branch "${KFP_VERSION}" \
+        https://github.com/kubeflow/pipelines.git \
+        "$tmp_dir/pipelines" \
+        || error "Failed to clone kubeflow/pipelines. Check internet access."
+
     info "Applying KFP cluster-scoped resources…"
-    kubectl apply -k \
-        "github.com/kubeflow/pipelines/manifests/kustomize/cluster-scoped-resources?ref=${KFP_VERSION}" \
-        || error "Failed to apply KFP cluster-scoped resources. Check internet access."
+    kubectl apply -k "$tmp_dir/pipelines/manifests/kustomize/cluster-scoped-resources"
 
     kubectl wait --for condition=established --timeout=120s crd/applications.app.k8s.io \
         || warn "CRD wait timed out — continuing anyway."
 
-    info "Applying KFP env/dev manifests…"
-    kubectl apply -k \
-        "github.com/kubeflow/pipelines/manifests/kustomize/env/dev?ref=${KFP_VERSION}"
+    info "Applying KFP platform-agnostic manifests…"
+    kubectl apply -k "$tmp_dir/pipelines/manifests/kustomize/env/platform-agnostic"
 
     info "Waiting for KFP core deployments (this may take 5-10 minutes)…"
     for dep in ml-pipeline ml-pipeline-ui ml-pipeline-persistenceagent ml-pipeline-scheduledworkflow; do
@@ -221,11 +240,12 @@ phase_kfp() {
         -p '{"spec":{"type":"NodePort","ports":[{"port":80,"targetPort":3000,"nodePort":30080}]}}' \
         || warn "Service patch failed — you may need to forward the port manually."
 
+    rm -rf "$tmp_dir"
     log "KFP installed and accessible at http://localhost:8080"
 }
 
 phase_kserve() {
-    step "Phase 5 — cert-manager + KServe (${KSERVE_VERSION})"
+    step "Phase 5 — ingress-nginx + cert-manager + KServe (${KSERVE_VERSION})"
 
     if ! kubectl get namespace cert-manager &>/dev/null; then
         info "Installing cert-manager ${CERTMANAGER_VERSION}…"
@@ -238,6 +258,20 @@ phase_kserve() {
         log "cert-manager ready."
     else
         log "cert-manager already installed."
+    fi
+
+    if kubectl get namespace ingress-nginx &>/dev/null; then
+        log "ingress-nginx already installed."
+    else
+        info "Installing ingress-nginx for KIND…"
+        kubectl apply -f \
+            "https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml"
+        kubectl wait --namespace ingress-nginx \
+            --for=condition=ready pod \
+            --selector=app.kubernetes.io/component=controller \
+            --timeout=180s \
+            || error "ingress-nginx controller did not become ready."
+        log "ingress-nginx ready."
     fi
 
     if kubectl get deployment kserve-controller-manager -n kserve &>/dev/null; then
@@ -256,9 +290,15 @@ phase_kserve() {
 
     info "Patching KServe to use RawDeployment as default mode…"
     kubectl patch configmap/inferenceservice-config -n kserve \
-        --type=merge \
+        --type=strategic \
         -p '{"data":{"deploy":"{\"defaultDeploymentMode\":\"RawDeployment\"}"}}' \
         2>/dev/null || warn "Could not patch inferenceservice-config — may not exist yet."
+
+    info "Patching KServe ingress config for nginx…"
+    kubectl patch configmap/inferenceservice-config -n kserve \
+        --type=strategic \
+        -p '{"data":{"ingress":"{\"ingressClassName\":\"nginx\",\"disableIngressCreation\":false}"}}' \
+        2>/dev/null || warn "Could not patch KServe ingress config — may not exist yet."
 
     log "KServe configured for RawDeployment."
 }
@@ -290,7 +330,7 @@ phase_compose() {
     step "Phase 7 — Docker Compose MLflow Stack"
 
     info "Starting docker compose services…"
-    docker compose -f "$REPO_DIR/infrastructure/docker-compose.yml" up -d --build
+    make docker-up
     info "Waiting 20 s for services to initialise…"
     sleep 20
 
@@ -359,7 +399,7 @@ phase_images() {
     kind load docker-image kfp-base:latest --name mlops-cluster
     log "kfp-base:latest loaded into KIND."
 
-    for image in "kserve/xgbserver:latest" "amazon/aws-cli:latest"; do
+    for image in "kserve/xgbserver:latest" "amazon/aws-cli:latest" "busybox:1.36"; do
         info "Pulling $image…"
         docker pull "$image"
         info "Loading $image into KIND…"
@@ -373,6 +413,7 @@ phase_images() {
 phase_minio_buckets() {
     step "Phase 10 — MinIO Buckets"
 
+    ensure_repo_venv
     info "Waiting for MinIO to be healthy…"
     for i in $(seq 1 30); do
         if curl -sf "http://localhost:9000/minio/health/live" > /dev/null 2>&1; then
@@ -383,7 +424,7 @@ phase_minio_buckets() {
         [ "$i" -eq 30 ] && error "MinIO did not become healthy in 90 s."
     done
 
-    python3 - <<'PYEOF'
+    "$PYTHON_BIN" - <<'PYEOF'
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
@@ -411,6 +452,7 @@ PYEOF
 phase_data() {
     step "Phase 11 — Data Pipeline (generate → ingest → train → register)"
 
+    ensure_repo_venv
     export MLFLOW_TRACKING_URI="http://localhost:5000"
     export MLFLOW_S3_ENDPOINT_URL="http://localhost:9000"
     export MINIO_ENDPOINT_URL="http://localhost:9000"
@@ -422,7 +464,7 @@ phase_data() {
     else
         info "Generating synthetic GPON telemetry…"
         mkdir -p "$REPO_DIR/data/raw"
-        python3 "$REPO_DIR/scripts/generate_data.py"
+        "$PYTHON_BIN" "$REPO_DIR/scripts/generate_data.py"
         log "Raw data generated."
     fi
 
@@ -430,7 +472,7 @@ phase_data() {
         log "Processed data already exists — skipping ingestion."
     else
         info "Running ingestion pipeline…"
-        python3 -m src.data.ingest \
+        "$PYTHON_BIN" -m src.data.ingest \
             --input "$REPO_DIR/data/raw/telemetry.csv" \
             --output "$REPO_DIR/data/processed/processed.csv"
         log "Ingestion complete."
@@ -447,7 +489,7 @@ phase_data() {
     done
 
     info "Training XGBoost model and registering in MLflow…"
-    python3 -m src.training.register_model \
+    "$PYTHON_BIN" -m src.training.register_model \
         --input "$REPO_DIR/data/processed/processed.csv" \
         --tracking-uri http://localhost:5000 \
         --experiment-name "gpon-failure-prediction" \
@@ -455,7 +497,7 @@ phase_data() {
     log "Model trained and registered."
 
     info "Uploading raw telemetry to s3://gpon-telemetry/raw/telemetry.csv…"
-    python3 - <<'PYEOF'
+    "$PYTHON_BIN" - <<'PYEOF'
 import boto3
 from botocore.config import Config
 
@@ -473,13 +515,14 @@ PYEOF
     log "Raw data uploaded to MinIO."
 
     info "Compiling Kubeflow pipeline…"
-    python3 -m pipelines.kubeflow_pipeline
+    "$PYTHON_BIN" -m pipelines.kubeflow_pipeline
     log "Pipeline compiled → pipelines/pipeline.yaml"
 }
 
 phase_deploy_model() {
     step "Phase 12 — Promote champion and deploy KServe model"
 
+    ensure_repo_venv
     export MLFLOW_TRACKING_URI="http://localhost:5000"
     export MLFLOW_S3_ENDPOINT_URL="http://localhost:9000"
     export MINIO_ENDPOINT_URL="http://localhost:9000"
@@ -487,7 +530,7 @@ phase_deploy_model() {
     export AWS_SECRET_ACCESS_KEY="minio123"
 
     info "Promoting the current best registered model to the stable champion path…"
-    python3 "$REPO_DIR/monitoring/promote_champion.py" --skip-rollout-restart
+    "$PYTHON_BIN" "$REPO_DIR/monitoring/promote_champion.py" --skip-rollout-restart
     log "Champion artifact synced to deployment-models."
 
     info "Applying the KServe InferenceService…"

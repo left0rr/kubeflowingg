@@ -4,6 +4,15 @@ This guide covers deploying the GPON MLOps Platform on a fresh GCP VM.
 
 Target VM specs: `4 vCPU · 16 GB RAM · 60 GB SSD · Debian 12 or Ubuntu 22.04 LTS`
 
+This version mirrors the flow you already validated manually:
+
+- repo-local `venv`
+- `make install`
+- KIND `v0.31.0`
+- Kubeflow Pipelines `2.15.0`
+- `ingress-nginx` before KServe
+- KServe `RawDeployment`
+
 ## Quick Start
 
 ```bash
@@ -20,7 +29,7 @@ The setup script now handles:
 - swap
 - KIND cluster
 - Kubeflow Pipelines
-- cert-manager + KServe
+- cert-manager + ingress-nginx + KServe
 - Kyverno plus starter `Audit` policies
 - Docker Compose stack
 - KIND/network ConfigMaps
@@ -36,11 +45,12 @@ The setup script now handles:
 |-----------|-------|---------|
 | Docker Engine | VM system | latest |
 | kubectl | VM system | latest stable |
-| KIND | VM system | `v0.23.0` |
+| KIND | VM system | `v0.31.0` |
 | Helm | VM system | latest |
-| Kubeflow Pipelines | KIND cluster | `2.3.0` |
+| Kubeflow Pipelines | KIND cluster | `2.15.0` |
 | KServe | KIND cluster | `v0.14.0` |
-| cert-manager | KIND cluster | `v1.15.0` |
+| cert-manager | KIND cluster | `v1.14.4` |
+| ingress-nginx | KIND cluster | latest KIND manifest |
 | Kyverno | KIND cluster | `v1.16.2` |
 | MLflow | Docker Compose | repo-managed |
 | MinIO | Docker Compose | repo-managed |
@@ -51,7 +61,7 @@ The setup script now handles:
 ## Important KServe Note
 
 This project currently deploys the model with an `aws-cli` sidecar in
-[deployment/kserve/inference_service.yaml](C:/Users/ademh/Desktop/kubeflowing/kubeflowingg/deployment/kserve/inference_service.yaml).
+`deployment/kserve/inference_service.yaml`.
 
 That means:
 
@@ -62,6 +72,18 @@ That means:
 - you **do not need** KServe's storage initializer for this manifest
 
 `setup_gcp.sh` now handles the champion export and InferenceService apply for you.
+
+## Python Environment
+
+The setup script creates and uses a repo-local virtual environment at `venv/`.
+That matches your usual flow and avoids Debian system Python packaging issues.
+
+If you want to work manually after setup:
+
+```bash
+source venv/bin/activate
+make install
+```
 
 ## Accessing the UIs
 
@@ -167,6 +189,23 @@ SKIP_PREREQS=true SKIP_K8S=true SKIP_COMPOSE=true SKIP_IMAGES=true ./setup_gcp.s
 SKIP_PREREQS=true SKIP_K8S=true SKIP_COMPOSE=true SKIP_IMAGES=true SKIP_DATA=true ./setup_gcp.sh
 SKIP_DEPLOY=true ./setup_gcp.sh
 ```
+
+## Manual Reference
+
+If you want to stay close to the exact order you already tested, the automation
+now follows this same sequence:
+
+1. create the repo `venv`
+2. run `make install`
+3. create the KIND cluster
+4. install KFP `2.15.0`
+5. install `cert-manager`
+6. install `ingress-nginx`
+7. install KServe and switch to `RawDeployment`
+8. run `make docker-up`
+9. run `./start_mlops.sh`
+10. generate data, ingest it, register the model, upload telemetry, compile the pipeline
+11. promote the champion and apply the InferenceService
 
 ## What Is Still Manual
 
