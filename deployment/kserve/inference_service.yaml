@@ -11,7 +11,7 @@ spec:
     maxReplicas: 1
     containers:
       - name: kserve-container
-        image: kserve/xgbserver:latest
+        image: kserve/xgbserver:v0.14.0
         imagePullPolicy: Never
         args:
           - --model_name=gpon-failure-predictor
