@@ -1,0 +1,49 @@
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+
+metadata:
+  name: kserve-xgbserver
+  namespace: kserve
+
+spec:
+  supportedModelFormats:
+    - name: xgboost
+      version: "1"
+      autoSelect: true
+
+  protocolVersions:
+    - v1
+
+  storageHelper:
+    disabled: true
+
+  containers:
+    - name: kserve-container
+
+      image: kserve/xgbserver:v0.14.0
+      imagePullPolicy: Never
+
+      args:
+        - --model_name={{.Name}}
+        - --model_dir=/mnt/models
+        - --http_port=8080
+        - --nthread=1
+
+      ports:
+        - containerPort: 8080
+
+      readinessProbe:
+        httpGet:
+          path: /v1/models/{{.Name}}
+          port: 8080
+        initialDelaySeconds: 30
+        periodSeconds: 5
+        failureThreshold: 10
+
+      resources:
+        requests:
+          cpu: "100m"
+          memory: 256Mi
+        limits:
+          cpu: "1"
+          memory: 2Gi
