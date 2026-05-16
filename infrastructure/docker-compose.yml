@@ -125,7 +125,7 @@ services:
     environment:
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       AWS_ACCESS_KEY_ID: minio
-      AWS_SECRET_ACCESS_KEY: minio123
+      AWS_SECRET_ACCESS_KEY: minio123 
     ports:
       - "5000:5000"
     networks:
@@ -136,6 +136,8 @@ services:
       --port 5000
       --backend-store-uri postgresql://mlflow:mlflow123@postgres:5432/mlflow_db
       --default-artifact-root s3://mlflow-artifacts/
+      --gunicorn-opts "--timeout 120 --workers 1 --keep-alive 10"
+
 
 networks:
   mlops-network:
