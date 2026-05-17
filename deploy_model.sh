@@ -94,10 +94,12 @@ done
   Try restarting: docker compose -f infrastructure/docker-compose.yml restart mlflow"
 
 # Parse and validate the response — pure bash + python stdin pipe, no HTTP call
-echo "$MODEL_JSON" | "$VENV_PYTHON" - <<'PYEOF'
-import json, sys
+MODEL_JSON_ENV="$MODEL_JSON" "$VENV_PYTHON" - <<'PYEOF'
+import json
+import os
+import sys
 
-data = json.load(sys.stdin)
+data = json.loads(os.environ["MODEL_JSON_ENV"])
 versions = data.get("model_versions", [])
 
 if not versions:
@@ -106,23 +108,28 @@ if not versions:
     sys.exit(1)
 
 latest = max(versions, key=lambda v: int(v["version"]))
+
 print(f"  Found    : {len(versions)} version(s)")
 print(f"  Latest   : version {latest['version']}")
 print(f"  Status   : {latest['status']}")
 print(f"  Run ID   : {latest['run_id']}")
 
 if latest["status"] != "READY":
-    print(f"\n  ERROR: version {latest['version']} status is '{latest['status']}' — not READY.", file=sys.stderr)
+    print(
+        f"\n  ERROR: version {latest['version']} status is "
+        f"'{latest['status']}' — not READY.",
+        file=sys.stderr,
+    )
     sys.exit(1)
 PYEOF
 
 log "Registered model confirmed READY."
 
 # Pull run metrics via curl too (informational)
-RUN_ID=$(echo "$MODEL_JSON" | "$VENV_PYTHON" -c "
-import json,sys
-v=json.load(sys.stdin).get('model_versions',[])
-print(max(v,key=lambda x:int(x['version']))['run_id'])
+RUN_ID=$(MODEL_JSON_ENV="$MODEL_JSON" "$VENV_PYTHON" -c "
+import json, os
+v=json.loads(os.environ['MODEL_JSON_ENV']).get('model_versions', [])
+print(max(v, key=lambda x:int(x['version']))['run_id'])
 ")
 info "Run ID: $RUN_ID"
 
@@ -130,14 +137,34 @@ RUN_DATA=$(curl -sf --max-time 10 \
     "http://localhost:5000/api/2.0/mlflow/runs/get?run_id=${RUN_ID}" \
     2>/dev/null || echo '{}')
 
-echo "$RUN_DATA" | "$VENV_PYTHON" - <<'PYEOF' || true
-import json, sys
-metrics = json.load(sys.stdin).get("run",{}).get("data",{}).get("metrics",{})
-for k,v in sorted(metrics.items()):
-    if any(x in k for x in ["auc","f1","precision","recall","positive"]):
-        print(f"  {k:<35} : {v:.4f}")
-PYEOF
+RUN_DATA_ENV="$RUN_DATA" "$VENV_PYTHON" - <<'PYEOF' || true
+import json
+import os
+import sys
 
+data = json.loads(os.environ["RUN_DATA_ENV"])
+
+metrics = (
+    data
+    .get("run", {})
+    .get("data", {})
+    .get("metrics", [])
+)
+
+if not metrics:
+    print("  No metrics found.")
+    sys.exit(0)
+
+for metric in metrics:
+    k = metric.get("key", "")
+    v = metric.get("value", 0)
+
+    if any(x in k for x in ["auc", "f1", "precision", "recall", "positive"]):
+        try:
+            print(f"  {k:<35} : {float(v):.4f}")
+        except Exception:
+            print(f"  {k:<35} : {v}")
+PYEOF
 # =============================================================================
 # Step 2 — Promote champion (promote_champion.py makes ONE fast MLflow call
 #           after the workers are confirmed stable above)
@@ -211,7 +238,6 @@ log "Artifact confirmed in MinIO."
 # Step 4 — Refresh ConfigMap and apply KServe InferenceService
 # =============================================================================
 step "Step 4 — Apply KServe InferenceService"
-kubectl get ns kserve >/dev/null 2>&1 || kubectl create ns kserve
 
 info "Refreshing mlops-endpoints ConfigMap in kserve namespace …"
 kubectl create configmap mlops-endpoints \
@@ -222,8 +248,7 @@ kubectl create configmap mlops-endpoints \
     --from-literal=AWS_SECRET_ACCESS_KEY="minio123" \
     -n kserve --dry-run=client -o yaml | kubectl apply -f -
 log "ConfigMap refreshed."
-info "Applying ServingRuntime …"
-kubectl apply -f "$REPO_DIR/deployment/kserve/xgb-runtime.yaml"
+
 info "Applying deployment/kserve/inference_service.yaml …"
 kubectl apply -f "$REPO_DIR/deployment/kserve/inference_service.yaml"
 log "InferenceService applied."
@@ -284,7 +309,7 @@ if ! kill -0 $PF_PID 2>/dev/null; then
 else
     log "Port-forward running (PID $PF_PID)"
 fi
-kubectl get pods -n kserve -o wide
+
 info "Smoke test …"
 RESPONSE=$(curl -sf --max-time 10 \
     -X POST http://localhost:8085/v1/models/gpon-failure-predictor:predict \

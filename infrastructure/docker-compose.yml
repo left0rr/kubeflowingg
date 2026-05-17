@@ -136,7 +136,7 @@ services:
       --port 5000
       --backend-store-uri postgresql://mlflow:mlflow123@postgres:5432/mlflow_db
       --default-artifact-root s3://mlflow-artifacts/
-      --gunicorn-opts "--timeout 120 --workers 1 --keep-alive 10"
+      --gunicorn-opts="--timeout 120 --workers 1 --keep-alive 10"
 
 
 networks:
