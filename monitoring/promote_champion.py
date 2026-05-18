@@ -146,7 +146,11 @@ def parse_args() -> argparse.Namespace:
         "--allow-alias-failure",
         action="store_true",
         default=False,
-        help="Warn instead of failing if updating the MLflow alias is unsuccessful.",
+        help=(
+            "Treat the MLflow alias as optional for this run. The champion artifact "
+            "is still synced for deployment, and alias mutation is skipped to avoid "
+            "blocking on flaky registry endpoints."
+        ),
     )
     parser.add_argument(
         "--timeout-seconds",
@@ -479,13 +483,19 @@ def main() -> None:
         source_model_uri=candidate_source_uri,
     )
 
-    set_alias_with_retries(
-        client=client,
-        model_name=args.model_name,
-        alias=args.alias,
-        version=latest_version.version,
-        allow_failure=args.allow_alias_failure,
-    )
+    if args.allow_alias_failure:
+        logger.warning(
+            "Skipping MLflow alias update for this run; champion artifact is already "
+            "synced and ready for KServe deployment."
+        )
+    else:
+        set_alias_with_retries(
+            client=client,
+            model_name=args.model_name,
+            alias=args.alias,
+            version=latest_version.version,
+            allow_failure=False,
+        )
 
     if not args.skip_rollout_restart:
         rollout_restart_predictor(
