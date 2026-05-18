@@ -151,12 +151,37 @@ import json, os
 v=json.loads(os.environ['MODEL_JSON_ENV']).get('model_versions', [])
 print(max(v, key=lambda x:int(x['version']))['version'])
 ")
+CANDIDATE_SOURCE_URI=$(MODEL_JSON_ENV="$MODEL_JSON" "$VENV_PYTHON" -c "
+import json, os
+v=json.loads(os.environ['MODEL_JSON_ENV']).get('model_versions', [])
+print(max(v, key=lambda x:int(x['version'])).get('source', ''))
+")
 info "Run ID: $RUN_ID"
 info "Candidate version: $CANDIDATE_VERSION"
+info "Candidate source: $CANDIDATE_SOURCE_URI"
 
 RUN_DATA=$(curl -sf --max-time 10 \
     "http://localhost:5000/api/2.0/mlflow/runs/get?run_id=${RUN_ID}" \
     2>/dev/null || echo '{}')
+CANDIDATE_METRIC=$(RUN_DATA_ENV="$RUN_DATA" "$VENV_PYTHON" - <<'PYEOF'
+import json
+import os
+
+metrics = (
+    json.loads(os.environ["RUN_DATA_ENV"])
+    .get("run", {})
+    .get("data", {})
+    .get("metrics", [])
+)
+
+value = ""
+for metric in metrics:
+    if metric.get("key") == "test_auc_roc":
+        value = str(metric.get("value", ""))
+        break
+print(value)
+PYEOF
+)
 
 RUN_DATA_ENV="$RUN_DATA" "$VENV_PYTHON" - <<'PYEOF' || true
 import json
@@ -203,6 +228,7 @@ info "Running promote_champion.py …"
 info "  Target : s3://deployment-models/gpon-failure-predictor/champion/model.bst"
 info "  Force  : $FORCE_PROMOTE"
 info "  Version: $CANDIDATE_VERSION"
+info "  Metric : $CANDIDATE_METRIC"
 
 # promote_champion.py also calls search_model_versions internally.
 # We pass the version discovered via curl above so the script avoids re-running
@@ -215,9 +241,13 @@ for attempt in 1 2 3; do
         --alias                champion \
         --metric-name          test_auc_roc \
         --candidate-version    "$CANDIDATE_VERSION" \
+        --candidate-run-id     "$RUN_ID" \
+        --candidate-source-uri "$CANDIDATE_SOURCE_URI" \
+        --candidate-metric-value "$CANDIDATE_METRIC" \
         --deployment-model-uri "s3://deployment-models/gpon-failure-predictor/champion/model.bst" \
         --minio-endpoint       http://localhost:9000 \
         --skip-rollout-restart \
+        --allow-alias-failure \
         $FORCE_FLAG; then
         PROMOTE_OK=true
         break

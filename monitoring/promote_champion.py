@@ -17,6 +17,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional, Tuple
 from urllib.parse import urlparse
 
@@ -85,6 +86,24 @@ def parse_args() -> argparse.Namespace:
         help="Optional explicit candidate version. Defaults to the latest registered version.",
     )
     parser.add_argument(
+        "--candidate-run-id",
+        type=str,
+        default=None,
+        help="Optional run ID for the candidate version. Avoids an extra registry lookup when already known.",
+    )
+    parser.add_argument(
+        "--candidate-source-uri",
+        type=str,
+        default=None,
+        help="Optional direct artifact URI for the candidate model. Avoids registry-backed models:/ loading when already known.",
+    )
+    parser.add_argument(
+        "--candidate-metric-value",
+        type=float,
+        default=None,
+        help="Optional precomputed candidate metric value. Useful when a wrapper has already fetched it.",
+    )
+    parser.add_argument(
         "--deployment-model-uri",
         type=str,
         default=DEFAULT_DEPLOYMENT_MODEL_URI,
@@ -122,6 +141,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Force promotion even when the candidate does not beat the current champion.",
+    )
+    parser.add_argument(
+        "--allow-alias-failure",
+        action="store_true",
+        default=False,
+        help="Warn instead of failing if updating the MLflow alias is unsuccessful.",
     )
     parser.add_argument(
         "--timeout-seconds",
@@ -255,6 +280,7 @@ def upload_champion_model(
     metric_name: str,
     metric_value: float,
     endpoint_url: str,
+    source_model_uri: Optional[str] = None,
 ) -> None:
     """Export the champion model to the stable MinIO path used by KServe."""
     bucket, key = parse_s3_uri(deployment_model_uri)
@@ -262,7 +288,7 @@ def upload_champion_model(
     ensure_artifact_env(endpoint_url)
     s3_client = get_s3_client(endpoint_url)
 
-    model_uri = f"models:/{model_name}/{model_version}"
+    model_uri = source_model_uri or f"models:/{model_name}/{model_version}"
     logger.info("Loading model from MLflow URI %s", model_uri)
     model = mlflow.xgboost.load_model(model_uri)
 
@@ -299,6 +325,44 @@ def upload_champion_model(
         metric_name,
         metric_value,
     )
+
+
+def set_alias_with_retries(
+    client: MlflowClient,
+    model_name: str,
+    alias: str,
+    version: str,
+    allow_failure: bool,
+    max_attempts: int = 3,
+) -> None:
+    """Set the MLflow alias with a few retries because the registry endpoint can be flaky."""
+    last_error: Optional[Exception] = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            client.set_registered_model_alias(model_name, alias, version)
+            logger.info("Set MLflow alias '%s' -> version %s", alias, version)
+            return
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            logger.warning(
+                "Failed to set alias '%s' -> version %s (attempt %s/%s): %s",
+                alias,
+                version,
+                attempt,
+                max_attempts,
+                exc,
+            )
+            if attempt < max_attempts:
+                time.sleep(3 * attempt)
+
+    if allow_failure:
+        logger.warning(
+            "Continuing despite MLflow alias update failure; deployment artifact was still synced."
+        )
+        return
+
+    if last_error is not None:
+        raise last_error
 
 
 def rollout_restart_predictor(
@@ -346,20 +410,35 @@ def main() -> None:
     mlflow.set_tracking_uri(args.tracking_uri)
     client = MlflowClient()
 
-    latest_version = (
-        client.get_model_version(args.model_name, args.candidate_version)
-        if args.candidate_version
-        else get_latest_model_version(client, args.model_name)
-    )
-    latest_version = wait_for_model_version_ready(
-        client,
-        args.model_name,
-        latest_version.version,
-        timeout_seconds=args.timeout_seconds,
+    candidate_source_uri = args.candidate_source_uri
+    if args.candidate_version and args.candidate_run_id:
+        latest_version = SimpleNamespace(
+            version=args.candidate_version,
+            run_id=args.candidate_run_id,
+            source=candidate_source_uri,
+            status="READY",
+        )
+    else:
+        latest_version = (
+            client.get_model_version(args.model_name, args.candidate_version)
+            if args.candidate_version
+            else get_latest_model_version(client, args.model_name)
+        )
+        latest_version = wait_for_model_version_ready(
+            client,
+            args.model_name,
+            latest_version.version,
+            timeout_seconds=args.timeout_seconds,
+        )
+        candidate_source_uri = getattr(latest_version, "source", candidate_source_uri)
+
+    candidate_metric = (
+        float(args.candidate_metric_value)
+        if args.candidate_metric_value is not None
+        else get_metric_value(client, latest_version, args.metric_name)
     )
 
-    candidate_metric = get_metric_value(client, latest_version, args.metric_name)
-    champion_version = get_current_alias_version(client, args.model_name, args.alias)
+    champion_version = None if args.force else get_current_alias_version(client, args.model_name, args.alias)
     champion_metric = None
 
     if champion_version is not None:
@@ -387,15 +466,12 @@ def main() -> None:
         )
         return
 
-    client.set_registered_model_alias(
-        args.model_name,
-        args.alias,
-        latest_version.version,
-    )
-    logger.info(
-        "Set MLflow alias '%s' -> version %s",
-        args.alias,
-        latest_version.version,
+    set_alias_with_retries(
+        client=client,
+        model_name=args.model_name,
+        alias=args.alias,
+        version=latest_version.version,
+        allow_failure=args.allow_alias_failure,
     )
 
     upload_champion_model(
@@ -405,6 +481,7 @@ def main() -> None:
         metric_name=args.metric_name,
         metric_value=candidate_metric,
         endpoint_url=args.minio_endpoint,
+        source_model_uri=candidate_source_uri,
     )
 
     if not args.skip_rollout_restart:

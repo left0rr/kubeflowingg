@@ -3,14 +3,12 @@
 # start_mlops.sh — Session startup for the GPON MLOps Platform
 # =============================================================================
 # Run at the start of every working session to:
-#   1. Start the non-mlflow compose services (postgres, minio, grafana, prometheus)
-#   2. Restart mlflow-server via docker run (avoids compose re-triggering
-#      postgres/minio restarts which crash gunicorn workers mid-startup)
-#   3. Bridge mlflow-server and mlflow-minio to the KIND network
-#   4. Detect current KIND IPs (change after every VM reboot)
-#   5. Re-apply Kubernetes ConfigMaps with fresh IPs
-#   6. Rebuild kfp-base from current src/ code and reload into KIND
-#   7. Restart KServe predictor so it picks up fresh endpoint env vars
+#   1. Start the docker compose stack
+#   2. Bridge mlflow-server and mlflow-minio to the KIND network
+#   3. Detect current KIND IPs (change after every VM reboot)
+#   4. Re-apply Kubernetes ConfigMaps with fresh IPs
+#   5. Rebuild kfp-base from current src/ code and reload into KIND
+#   6. Restart KServe predictor so it picks up fresh endpoint env vars
 #
 # Usage:
 #   ./start_mlops.sh
@@ -54,54 +52,10 @@ kubectl cluster-info --context kind-mlops-cluster > /dev/null \
     && log "KIND cluster is reachable." \
     || { warn "Cannot reach cluster. Try: kubectl config use-context kind-mlops-cluster"; exit 1; }
 
-# ── 2. Start compose services + restart mlflow via docker run ─────────────────
+# ── 2. Start compose services ──────────────────────────────────────────────────
 if [ "$RESTART_COMPOSE" = true ]; then
-    # Start everything except mlflow first so postgres + minio are healthy
-    # before mlflow tries to connect to them.
-    info "Starting non-mlflow compose services (postgres, minio, grafana, prometheus)…"
-    docker compose -f "$REPO_DIR/infrastructure/docker-compose.yml" up -d \
-        postgres minio minio-setup grafana prometheus node-exporter
-
-    info "Waiting 15 s for postgres and minio to become healthy…"
-    sleep 15
-
-    for svc in mlflow-postgres mlflow-minio; do
-        STATUS=$(docker inspect "$svc" --format '{{.State.Health.Status}}' 2>/dev/null || echo "unknown")
-        [ "$STATUS" = "healthy" ] \
-            && log "  $svc is healthy." \
-            || warn "  $svc status: $STATUS — mlflow may fail to connect."
-    done
-
-    if ! docker image inspect infrastructure-mlflow:latest >/dev/null 2>&1; then
-        info "Building infrastructure-mlflow:latest …"
-        docker compose -f "$REPO_DIR/infrastructure/docker-compose.yml" build mlflow
-    fi
-
-    # Restart mlflow-server with docker run.
-    # Why not docker compose up -d mlflow?
-    # compose restarts postgres+minio due to depends_on health-check evaluation,
-    # which briefly drops the postgres connection exactly when gunicorn workers
-    # are booting — causing ConnectionResetError on the first client requests.
-    # docker run against already-healthy containers avoids this entirely.
-    info "Restarting mlflow-server via docker run…"
-    docker rm -f mlflow-server 2>/dev/null || true
-
-    docker run -d \
-        --name mlflow-server \
-        --network infrastructure_mlops-network \
-        --restart unless-stopped \
-        -p 5000:5000 \
-        -e MLFLOW_S3_ENDPOINT_URL=http://mlflow-minio:9000 \
-        -e AWS_ACCESS_KEY_ID=minio \
-        -e AWS_SECRET_ACCESS_KEY=minio123 \
-        -e MLFLOW_SQLALCHEMYSTORE_POOL_PRE_PING=true \
-        infrastructure-mlflow \
-        mlflow server \
-            --host 0.0.0.0 \
-            --port 5000 \
-            --backend-store-uri postgresql://mlflow:mlflow123@mlflow-postgres:5432/mlflow_db \
-            --default-artifact-root s3://mlflow-artifacts/ \
-            --gunicorn-opts "--timeout 120 --workers 2 --keep-alive 10"
+    info "Starting docker compose services…"
+    docker compose -f "$REPO_DIR/infrastructure/docker-compose.yml" up -d --build
 
     info "Waiting for mlflow-server to start…"
     for i in $(seq 1 20); do
@@ -113,7 +67,7 @@ if [ "$RESTART_COMPOSE" = true ]; then
         sleep 3
     done
 
-    log "All services started."
+    log "Docker compose stack started."
 else
     info "Skipping Docker Compose restart (--no-compose)."
 fi
