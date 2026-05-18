@@ -336,6 +336,9 @@ def set_alias_with_retries(
     max_attempts: int = 3,
 ) -> None:
     """Set the MLflow alias with a few retries because the registry endpoint can be flaky."""
+    if allow_failure:
+        max_attempts = 1
+
     last_error: Optional[Exception] = None
     for attempt in range(1, max_attempts + 1):
         try:
@@ -466,14 +469,6 @@ def main() -> None:
         )
         return
 
-    set_alias_with_retries(
-        client=client,
-        model_name=args.model_name,
-        alias=args.alias,
-        version=latest_version.version,
-        allow_failure=args.allow_alias_failure,
-    )
-
     upload_champion_model(
         model_name=args.model_name,
         model_version=latest_version.version,
@@ -482,6 +477,14 @@ def main() -> None:
         metric_value=candidate_metric,
         endpoint_url=args.minio_endpoint,
         source_model_uri=candidate_source_uri,
+    )
+
+    set_alias_with_retries(
+        client=client,
+        model_name=args.model_name,
+        alias=args.alias,
+        version=latest_version.version,
+        allow_failure=args.allow_alias_failure,
     )
 
     if not args.skip_rollout_restart:
