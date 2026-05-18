@@ -58,8 +58,9 @@ detect_ips() {
     MINIO_IP=$(docker inspect mlflow-minio \
         --format '{{range $k,$v := .NetworkSettings.Networks}}{{if eq $k "kind"}}{{$v.IPAddress}}{{end}}{{end}}' \
         2>/dev/null || true)
-    [ -z "$MLFLOW_IP" ] && error "Cannot detect MLflow IP — run ./start_mlops.sh first."
-    [ -z "$MINIO_IP"  ] && error "Cannot detect MinIO IP  — run ./start_mlops.sh first."
+        
+    if [ -z "$MLFLOW_IP" ]; then error "Cannot detect MLflow IP — run ./start_mlops.sh first."; fi
+    if [ -z "$MINIO_IP" ]; then error "Cannot detect MinIO IP  — run ./start_mlops.sh first."; fi
 }
 
 # =============================================================================
@@ -174,7 +175,9 @@ step "Step 2 — Promote champion model"
 detect_ips
 
 FORCE_FLAG=""
-[ "$FORCE_PROMOTE" = true ] && FORCE_FLAG="--force"
+if [ "$FORCE_PROMOTE" = true ]; then 
+    FORCE_FLAG="--force"
+fi
 
 info "Running promote_champion.py …"
 info "  Target : s3://deployment-models/gpon-failure-predictor/champion/model.bst"
