@@ -425,46 +425,11 @@ phase_kyverno() {
 phase_compose() {
     step "Phase 7 — Docker Compose MLflow Stack"
 
-    # Start everything except mlflow first so postgres+minio are healthy
-    info "Starting supporting services …"
-    docker compose -f "$REPO_DIR/infrastructure/docker-compose.yml" up -d \
-        postgres minio minio-setup grafana prometheus node-exporter
-    sleep 15
+    info "Starting docker compose services …"
+    docker compose -f "$REPO_DIR/infrastructure/docker-compose.yml" up -d --build --force-recreate
 
-    for svc in mlflow-postgres mlflow-minio; do
-        STATUS=$(docker inspect "$svc" --format '{{.State.Health.Status}}' 2>/dev/null || echo "unknown")
-        [ "$STATUS" = "healthy" ] \
-            && log "  $svc is healthy." \
-            || warn "  $svc status: $STATUS"
-    done
-
-    # Start mlflow via docker run — same method confirmed working with make docker-up
-    # Avoids compose re-evaluating depends_on which briefly drops postgres connection
-    info "Starting mlflow-server via docker run …"
-    docker rm -f mlflow-server 2>/dev/null || true
-    docker compose -f "$REPO_DIR/infrastructure/docker-compose.yml" build mlflow
-    docker run -d \
-        --name mlflow-server \
-        --network infrastructure_mlops-network \
-        --restart unless-stopped \
-        -p 5000:5000 \
-        -e MLFLOW_S3_ENDPOINT_URL=http://mlflow-minio:9000 \
-        -e AWS_ACCESS_KEY_ID=minio \
-        -e AWS_SECRET_ACCESS_KEY=minio123 \
-        infrastructure-mlflow \
-        mlflow server \
-            --host 0.0.0.0 \
-            --port 5000 \
-            --backend-store-uri postgresql://mlflow:mlflow123@mlflow-postgres:5432/mlflow_db \
-            --default-artifact-root s3://mlflow-artifacts/ \
-            --gunicorn-opts "--timeout 120 --workers 2 --keep-alive 10"
-
-    info "Waiting for mlflow-server …"
-    for i in $(seq 1 20); do
-        curl -sf --max-time 5 http://localhost:5000/health &>/dev/null && break
-        info "  Waiting… ($i/20)"; sleep 3
-    done
-    log "mlflow-server is healthy."
+    info "Waiting 20 s for services to initialise …"
+    sleep 20
 
     for svc in mlflow-server mlflow-minio mlflow-postgres grafana prometheus; do
         docker ps --format '{{.Names}}' | grep -q "$svc" \
