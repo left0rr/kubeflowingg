@@ -304,6 +304,14 @@ kubectl create configmap mlops-endpoints \
     -n kserve --dry-run=client -o yaml | kubectl apply -f -
 log "ConfigMap refreshed."
 
+if [ -f "$REPO_DIR/deployment/kserve/xgb-runtime.yaml" ]; then
+    info "Applying deployment/kserve/xgb-runtime.yaml …"
+    kubectl apply -f "$REPO_DIR/deployment/kserve/xgb-runtime.yaml"
+    log "ServingRuntime applied."
+else
+    warn "deployment/kserve/xgb-runtime.yaml not found — skipping ServingRuntime apply."
+fi
+
 info "Applying deployment/kserve/inference_service.yaml …"
 kubectl apply -f "$REPO_DIR/deployment/kserve/inference_service.yaml"
 log "InferenceService applied."
