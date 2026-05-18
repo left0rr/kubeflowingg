@@ -72,6 +72,11 @@ if [ "$RESTART_COMPOSE" = true ]; then
             || warn "  $svc status: $STATUS — mlflow may fail to connect."
     done
 
+    if ! docker image inspect infrastructure-mlflow:latest >/dev/null 2>&1; then
+        info "Building infrastructure-mlflow:latest …"
+        docker compose -f "$REPO_DIR/infrastructure/docker-compose.yml" build mlflow
+    fi
+
     # Restart mlflow-server with docker run.
     # Why not docker compose up -d mlflow?
     # compose restarts postgres+minio due to depends_on health-check evaluation,

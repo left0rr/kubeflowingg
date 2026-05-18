@@ -152,6 +152,15 @@ def get_s3_client(endpoint_url: str):
     )
 
 
+def ensure_artifact_env(endpoint_url: str) -> None:
+    """Seed MLflow/boto artifact env vars so local champion export is self-contained."""
+    os.environ.setdefault("MLFLOW_S3_ENDPOINT_URL", endpoint_url)
+    os.environ.setdefault("MINIO_ENDPOINT_URL", endpoint_url)
+    os.environ.setdefault("AWS_ACCESS_KEY_ID", "minio")
+    os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "minio123")
+    os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
+
+
 def ensure_bucket_exists(bucket: str, endpoint_url: str) -> None:
     """Create the deployment bucket if it does not already exist."""
     s3_client = get_s3_client(endpoint_url)
@@ -250,6 +259,7 @@ def upload_champion_model(
     """Export the champion model to the stable MinIO path used by KServe."""
     bucket, key = parse_s3_uri(deployment_model_uri)
     ensure_bucket_exists(bucket, endpoint_url)
+    ensure_artifact_env(endpoint_url)
     s3_client = get_s3_client(endpoint_url)
 
     model_uri = f"models:/{model_name}/{model_version}"
@@ -331,6 +341,7 @@ def main() -> None:
     """CLI entry-point for champion promotion and deployment."""
     args = parse_args()
     configure_logging()
+    ensure_artifact_env(args.minio_endpoint)
 
     mlflow.set_tracking_uri(args.tracking_uri)
     client = MlflowClient()

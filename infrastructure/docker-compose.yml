@@ -114,6 +114,7 @@ services:
       - mlops-network
 
   mlflow:
+    image: infrastructure-mlflow:latest
     build: .
     container_name: mlflow-server
     restart: unless-stopped

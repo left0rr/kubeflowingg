@@ -102,6 +102,44 @@ wait_for_deployment() {
         || error "Deployment $dep did not roll out within ${timeout}s"
 }
 
+start_mlflow_server() {
+    if ! docker image inspect infrastructure-mlflow:latest >/dev/null 2>&1; then
+        info "Building infrastructure-mlflow:latest …"
+        docker compose -f "$REPO_DIR/infrastructure/docker-compose.yml" build mlflow
+    fi
+
+    info "Restarting mlflow-server with the stable startup path…"
+    docker rm -f mlflow-server 2>/dev/null || true
+
+    docker run -d \
+        --name mlflow-server \
+        --network infrastructure_mlops-network \
+        --restart unless-stopped \
+        -p 5000:5000 \
+        -e MLFLOW_S3_ENDPOINT_URL=http://mlflow-minio:9000 \
+        -e AWS_ACCESS_KEY_ID=minio \
+        -e AWS_SECRET_ACCESS_KEY=minio123 \
+        -e MLFLOW_SQLALCHEMYSTORE_POOL_PRE_PING=true \
+        infrastructure-mlflow \
+        mlflow server \
+            --host 0.0.0.0 \
+            --port 5000 \
+            --backend-store-uri postgresql://mlflow:mlflow123@mlflow-postgres:5432/mlflow_db \
+            --default-artifact-root s3://mlflow-artifacts/ \
+            --gunicorn-opts "--timeout 120 --workers 2 --keep-alive 10"
+
+    info "Waiting for mlflow-server health endpoint…"
+    for i in $(seq 1 20); do
+        if curl -sf --max-time 5 http://localhost:5000/health &>/dev/null; then
+            log "mlflow-server is healthy."
+            return
+        fi
+        sleep 3
+    done
+
+    error "mlflow-server did not become healthy."
+}
+
 # =============================================================================
 # PHASE 1 — System Prerequisites
 # =============================================================================
@@ -425,13 +463,23 @@ phase_kyverno() {
 phase_compose() {
     step "Phase 7 — Docker Compose MLflow Stack"
 
-    info "Starting docker compose services …"
-    docker compose -f "$REPO_DIR/infrastructure/docker-compose.yml" up -d --build --force-recreate
+    info "Starting non-mlflow compose services …"
+    docker compose -f "$REPO_DIR/infrastructure/docker-compose.yml" up -d --build \
+        postgres minio minio-setup grafana prometheus node-exporter
 
-    info "Waiting 20 s for services to initialise …"
-    sleep 20
+    info "Waiting 15 s for postgres and minio to stabilise …"
+    sleep 15
 
-    for svc in mlflow-server mlflow-minio mlflow-postgres grafana prometheus; do
+    for svc in mlflow-postgres mlflow-minio; do
+        status=$(docker inspect "$svc" --format '{{.State.Health.Status}}' 2>/dev/null || echo "unknown")
+        [ "$status" = "healthy" ] \
+            && log "  ✔ $svc healthy" \
+            || warn "  $svc status: $status"
+    done
+
+    start_mlflow_server
+
+    for svc in mlflow-server grafana prometheus; do
         docker ps --format '{{.Names}}' | grep -q "$svc" \
             && log "  ✔ $svc running" \
             || warn "  $svc not running"

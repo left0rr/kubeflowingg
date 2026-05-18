@@ -52,6 +52,12 @@ export AWS_ACCESS_KEY_ID="minio"
 export AWS_SECRET_ACCESS_KEY="minio123"
 
 detect_ips() {
+    for container in mlflow-server mlflow-minio; do
+        docker inspect "$container" &>/dev/null \
+            || error "Container $container is not running. Start the stack first."
+        docker network connect kind "$container" 2>/dev/null || true
+    done
+
     MLFLOW_IP=$(docker inspect mlflow-server \
         --format '{{range $k,$v := .NetworkSettings.Networks}}{{if eq $k "kind"}}{{$v.IPAddress}}{{end}}{{end}}' \
         2>/dev/null || true)
@@ -75,6 +81,7 @@ step "Step 1 — Wait for MLflow to be ready"
 info "Probing MLflow API until workers are stable (up to 3 min) …"
 
 MODEL_JSON=""
+CONSECUTIVE_OK=0
 for i in $(seq 1 36); do
     RESPONSE=$(curl -sf --max-time 10 \
         "http://localhost:5000/api/2.0/mlflow/model-versions/search?filter=name+%3D+%27gpon-xgboost-classifier%27&max_results=100" \
@@ -82,10 +89,17 @@ for i in $(seq 1 36); do
 
     if echo "$RESPONSE" | grep -q '"model_versions"'; then
         MODEL_JSON="$RESPONSE"
-        log "MLflow API is responding (attempt $i)."
-        break
+        CONSECUTIVE_OK=$((CONSECUTIVE_OK + 1))
+        info "  MLflow API success streak: $CONSECUTIVE_OK/3"
+        if [ "$CONSECUTIVE_OK" -ge 3 ]; then
+            log "MLflow API is responding consistently (attempt $i)."
+            break
+        fi
+        sleep 3
+        continue
     fi
 
+    CONSECUTIVE_OK=0
     warn "MLflow workers not ready yet — waiting 5 s … ($i/36)"
     sleep 5
 done
@@ -132,7 +146,13 @@ import json, os
 v=json.loads(os.environ['MODEL_JSON_ENV']).get('model_versions', [])
 print(max(v, key=lambda x:int(x['version']))['run_id'])
 ")
+CANDIDATE_VERSION=$(MODEL_JSON_ENV="$MODEL_JSON" "$VENV_PYTHON" -c "
+import json, os
+v=json.loads(os.environ['MODEL_JSON_ENV']).get('model_versions', [])
+print(max(v, key=lambda x:int(x['version']))['version'])
+")
 info "Run ID: $RUN_ID"
+info "Candidate version: $CANDIDATE_VERSION"
 
 RUN_DATA=$(curl -sf --max-time 10 \
     "http://localhost:5000/api/2.0/mlflow/runs/get?run_id=${RUN_ID}" \
@@ -182,10 +202,11 @@ fi
 info "Running promote_champion.py …"
 info "  Target : s3://deployment-models/gpon-failure-predictor/champion/model.bst"
 info "  Force  : $FORCE_PROMOTE"
+info "  Version: $CANDIDATE_VERSION"
 
 # promote_champion.py also calls search_model_versions internally.
-# By the time we reach here the workers are confirmed stable (Step 1 passed),
-# so this should succeed. If a worker crashes mid-call we retry up to 3 times.
+# We pass the version discovered via curl above so the script avoids re-running
+# the flakiest registry search call. If a worker still crashes mid-call, retry.
 PROMOTE_OK=false
 for attempt in 1 2 3; do
     if "$VENV_PYTHON" "$REPO_DIR/monitoring/promote_champion.py" \
@@ -193,6 +214,7 @@ for attempt in 1 2 3; do
         --model-name           gpon-xgboost-classifier \
         --alias                champion \
         --metric-name          test_auc_roc \
+        --candidate-version    "$CANDIDATE_VERSION" \
         --deployment-model-uri "s3://deployment-models/gpon-failure-predictor/champion/model.bst" \
         --minio-endpoint       http://localhost:9000 \
         --skip-rollout-restart \
